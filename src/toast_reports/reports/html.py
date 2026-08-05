@@ -55,6 +55,7 @@ def _build_payload(
     active_slug: str,
     daily_rows: list[dict],
     labor_by_role: dict | None,
+    kpi_ctx: dict,
 ) -> dict:
     weeks = group_by_week(metrics)
     week_labels = [w.week_start.isoformat() for w in weeks]
@@ -90,7 +91,8 @@ def _build_payload(
             "salesPerLaborHour": series("sales_per_labor_hour"),
         },
         "table": _table_rows(weeks),
-        "kpis": _kpis(weeks),
+        # Two KPI rows: current (in-progress) week and prior completed week.
+        "kpiRows": _kpi_rows(present, kpi_ctx),
         # Overview-only: SPLH by location across weeks, with avg + first->last change.
         "splhMatrix": _splh_matrix(weeks, present),
         # Overview-only: labor hours by role x location for the latest week.
@@ -141,49 +143,51 @@ def _table_rows(weeks) -> list[dict]:
     return rows
 
 
-def _kpis(weeks) -> dict:
-    """Latest-week company totals with deltas vs the prior week."""
-    if not weeks:
-        return {}
-    latest = weeks[-1]
-    prev = weeks[-2] if len(weeks) > 1 else None
+_KPI_KEYS = ["netSales", "transactions", "laborCost", "laborPct", "salesPerLaborHour"]
 
-    def totals(w) -> dict:
-        net = sum(r.net_sales for r in w.rows)
-        labor = sum(r.labor_cost for r in w.rows)
-        hours = sum(r.labor_hours for r in w.rows)
-        txns = sum(r.transaction_count for r in w.rows)
+
+def _kpi_rows(present: list[str], kpi_ctx: dict) -> dict:
+    """Two KPI rows for this page's locations: the current (in-progress) week
+    with deltas vs the same days of the prior week, and the prior completed week
+    with deltas vs the week before it."""
+    by_loc = kpi_ctx.get("by_loc", {})
+    dates = kpi_ctx.get("dates", {})
+
+    def window_sum(key: str) -> dict:
+        tot = {"netSales": 0.0, "transactions": 0, "laborCost": 0.0, "laborHours": 0.0}
+        for name in present:
+            w = by_loc.get(name, {}).get(key)
+            if not w:
+                continue
+            for k in tot:
+                tot[k] += w.get(k, 0)
+        return tot
+
+    def metrics_of(t: dict) -> dict:
+        net, hours = t["netSales"], t["laborHours"]
         return {
             "netSales": net,
-            "laborCost": labor,
-            "transactions": txns,
-            "laborPct": (labor / net) if net else 0.0,
+            "transactions": t["transactions"],
+            "laborCost": t["laborCost"],
+            "laborPct": (t["laborCost"] / net) if net else 0.0,
             "salesPerLaborHour": (net / hours) if hours else 0.0,
         }
 
-    cur = totals(latest)
-    pri = totals(prev) if prev else None
+    def deltas(m: dict, base: dict) -> dict:
+        return {k: ((m[k] - base[k]) / base[k]) if base[k] else None for k in _KPI_KEYS}
 
-    def delta(key: str) -> float | None:
-        if not pri or not pri.get(key):
-            return None
-        return (cur[key] - pri[key]) / pri[key]
+    cur_t, prior_same = window_sum("current"), window_sum("priorSame")
+    prior_t, prior_prev = window_sum("prior"), window_sum("priorPrev")
+    cur_m, prior_m = metrics_of(cur_t), metrics_of(prior_t)
 
-    return {
-        "weekOf": latest.week_start.isoformat(),
-        "netSales": cur["netSales"],
-        "transactions": cur["transactions"],
-        "laborCost": cur["laborCost"],
-        "laborPct": cur["laborPct"],
-        "salesPerLaborHour": cur["salesPerLaborHour"],
-        "deltas": {
-            "netSales": delta("netSales"),
-            "transactions": delta("transactions"),
-            "laborCost": delta("laborCost"),
-            "laborPct": delta("laborPct"),
-            "salesPerLaborHour": delta("salesPerLaborHour"),
-        },
+    rows: dict = {
+        "prior": {"label": "Prior week", "dates": dates.get("prior", ""),
+                  **prior_m, "deltas": deltas(prior_m, metrics_of(prior_prev))},
     }
+    if kpi_ctx.get("has_current") and (cur_t["netSales"] or cur_t["laborHours"]):
+        rows["current"] = {"label": "Current week", "dates": dates.get("current", ""),
+                           **cur_m, "deltas": deltas(cur_m, metrics_of(prior_same))}
+    return rows
 
 
 def _slug(name: str) -> str:
@@ -220,9 +224,11 @@ def _write_page(
     logo_uri: str,
     daily_rows: list[dict],
     labor_by_role: dict | None,
+    kpi_ctx: dict,
 ) -> None:
     payload = _build_payload(
-        metrics, title, scope_label, loc_index, nav, active_slug, daily_rows, labor_by_role
+        metrics, title, scope_label, loc_index, nav, active_slug, daily_rows,
+        labor_by_role, kpi_ctx,
     )
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
     html = (
@@ -237,8 +243,11 @@ def render_dashboard(
     metrics: list[WeeklyMetrics],
     out_path: str | Path,
     title: str,
-    daily: list | None = None,
+    current_daily: list | None = None,
     labor_by_role=None,
+    kpi_by_loc: dict | None = None,
+    kpi_dates: dict | None = None,
+    has_current: bool = False,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -248,13 +257,18 @@ def render_dashboard(
 
     loc_names = _location_order(metrics)
     loc_index = {name: i for i, name in enumerate(loc_names)}
+    kpi_ctx = {
+        "by_loc": kpi_by_loc or {},
+        "dates": kpi_dates or {},
+        "has_current": has_current,
+    }
 
-    # Daily rows grouped by location (for the per-location daily board).
+    # Current-week daily rows grouped by location (chronological, Mon first).
     daily_by_loc: dict[str, list[dict]] = {}
-    for d in daily or []:
+    for d in current_daily or []:
         daily_by_loc.setdefault(d.location_name, []).append(_daily_row(d))
     for rows in daily_by_loc.values():
-        rows.sort(key=lambda r: r["day"], reverse=True)  # most recent first
+        rows.sort(key=lambda r: r["day"])  # chronological
 
     # Unique slug per location (guard against collisions).
     slugs: dict[str, str] = {}
@@ -277,17 +291,17 @@ def render_dashboard(
     # the labor-by-role matrix is a cross-location board (overview only).
     _write_page(
         out_dir / "index.html", metrics, title, "All Locations", loc_index, nav,
-        "index", logo_uri, [], role_payload,
+        "index", logo_uri, [], role_payload, kpi_ctx,
     )
 
-    # One page per location, with its own daily board and its own role matrix
+    # One page per location, with its own current-week table and role matrix
     # (that single location as the only column).
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
         _write_page(
             out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
             slugs[name], logo_uri, daily_by_loc.get(name, []),
-            _labor_by_role_payload(labor_by_role, [name]),
+            _labor_by_role_payload(labor_by_role, [name]), kpi_ctx,
         )
 
     return out_dir / "index.html"
@@ -316,7 +330,7 @@ def _daily_row(d) -> dict:
         "day": d.business_date.isoformat(),
         "dow": _WEEKDAY[d.business_date.weekday()],
         "netSales": round(d.net_sales, 2),
-        "laborHours": round(d.labor_hours, 1),
+        "laborHours": round(d.labor_hours, 2),
         "salesPerLaborHour": round(d.sales_per_labor_hour, 2),
     }
 
@@ -382,7 +396,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   }
   .nav a:hover { border-color: var(--accent); color: var(--ink); }
   .nav a.active { background: var(--accent); color: #fff; border-color: transparent; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 22px 0; }
+  .kpi-head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 700; margin: 20px 0 8px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 0 0 8px; }
   .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
   .tile .value { font-size: 26px; font-weight: 650; margin-top: 6px; }
@@ -430,7 +445,14 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <nav class="nav" id="nav" aria-label="Locations"></nav>
 
-  <section class="kpis" id="kpis" aria-label="Latest week summary"></section>
+  <section id="kpi-current" aria-label="Current week summary" style="display:none">
+    <div class="kpi-head" id="kpi-current-head"></div>
+    <div class="kpis" id="kpis-current"></div>
+  </section>
+  <section id="kpi-prior" aria-label="Prior week summary">
+    <div class="kpi-head" id="kpi-prior-head"></div>
+    <div class="kpis" id="kpis-prior"></div>
+  </section>
 
   <section class="card" id="splh-card" style="display:none">
     <h2>Sales per labor hour by location</h2>
@@ -466,8 +488,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section class="card" id="daily-card" style="display:none">
-    <h2>Daily detail</h2>
-    <p class="hint">Sales, labor hours, and sales per labor hour by day (most recent first).</p>
+    <h2>Current week</h2>
+    <p class="hint" id="daily-hint">Net sales, labor hours, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
     <div class="tablewrap"><table id="dailyTable"></table></div>
   </section>
 
@@ -596,22 +618,19 @@ function legend(mountId, series) {
   ).join("");
 }
 
-function renderKpis() {
-  const k = DATA.kpis; const mount = document.getElementById("kpis");
-  if (!k || !k.weekOf) { mount.innerHTML = ""; return; }
+function kpiTiles(row) {
   const items = [
-    { label: "Net Sales", value: money(k.netSales), d: k.deltas.netSales, good: "up" },
-    { label: "Transactions", value: num(k.transactions), d: k.deltas.transactions, good: "up" },
-    { label: "Labor Cost", value: money(k.laborCost), d: k.deltas.laborCost, good: "down" },
-    { label: "Labor %", value: pct(k.laborPct), d: k.deltas.laborPct, good: "down" },
-    { label: "Sales / Labor Hr", value: money2(k.salesPerLaborHour), d: k.deltas.salesPerLaborHour, good: "up" },
+    { label: "Net Sales", value: money(row.netSales), d: row.deltas.netSales, good: "up" },
+    { label: "Transactions", value: num(row.transactions), d: row.deltas.transactions, good: "up" },
+    { label: "Labor Cost", value: money(row.laborCost), d: row.deltas.laborCost, good: "down" },
+    { label: "Labor %", value: pct(row.laborPct), d: row.deltas.laborPct, good: "down" },
+    { label: "Sales / Labor Hr", value: money2(row.salesPerLaborHour), d: row.deltas.salesPerLaborHour, good: "up" },
   ];
-  mount.innerHTML = items.map(it => {
-    let dd = "";
-    if (it.d == null) { dd = `<div class="delta flat">no prior week</div>`; }
+  return items.map(it => {
+    let dd;
+    if (it.d == null) { dd = `<div class="delta flat">no prior data</div>`; }
     else {
       const up = it.d > 0.0005, down = it.d < -0.0005;
-      const dir = up ? "up" : down ? "down" : "flat";
       const isGood = (it.good === "up" && up) || (it.good === "down" && down);
       const cls = (up || down) ? (isGood ? "up" : "down") : "flat";
       const arrow = up ? "▲" : down ? "▼" : "–";
@@ -619,6 +638,24 @@ function renderKpis() {
     }
     return `<div class="tile"><div class="label">${it.label}</div><div class="value">${it.value}</div>${dd}</div>`;
   }).join("");
+}
+
+function renderKpis() {
+  const rows = DATA.kpiRows || {};
+  const curSec = document.getElementById("kpi-current");
+  if (rows.current) {
+    curSec.style.display = "";
+    document.getElementById("kpi-current-head").textContent =
+      "Current week" + (rows.current.dates ? " · " + rows.current.dates : "");
+    document.getElementById("kpis-current").innerHTML = kpiTiles(rows.current);
+  } else {
+    curSec.style.display = "none";
+  }
+  if (rows.prior) {
+    document.getElementById("kpi-prior-head").textContent =
+      "Prior week" + (rows.prior.dates ? " · " + rows.prior.dates : "");
+    document.getElementById("kpis-prior").innerHTML = kpiTiles(rows.prior);
+  }
 }
 
 function renderTable() {
@@ -689,16 +726,17 @@ function renderLaborByRole() {
   document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · Register excluded";
 }
 
-// Location only: per-day Sales / Labor hours / SPLH.
+// Location only: current-week per-day Net sales / Hours / SPLH.
 function renderDaily() {
   const card = document.getElementById("daily-card");
   const rows = DATA.daily || [];
   if (!rows.length) { card.style.display = "none"; return; }
   card.style.display = "";
-  const head = "<thead><tr><th>Day</th><th>Sales</th><th>Labor Hrs</th><th>Sales / Labor Hr</th></tr></thead>";
+  const hm = h => Math.floor(h) + "h" + String(Math.round((h - Math.floor(h)) * 60)).padStart(2, "0") + "m";
+  const head = "<thead><tr><th>Day</th><th>Net sales</th><th>Hours</th><th>SPLH</th></tr></thead>";
   const body = "<tbody>" + rows.map(r =>
     `<tr><td>${r.dow} ${fmtDay(r.day)}</td><td>${money2(r.netSales)}</td>` +
-    `<td>${num1(r.laborHours)}</td><td>${money2(r.salesPerLaborHour)}</td></tr>`
+    `<td>${hm(r.laborHours)}</td><td>${money2(r.salesPerLaborHour)}</td></tr>`
   ).join("") + "</tbody>";
   document.getElementById("dailyTable").innerHTML = head + body;
 }
@@ -713,12 +751,11 @@ function renderNav() {
 function renderAll() {
   document.getElementById("title").textContent = DATA.title;
   const byLoc = DATA.locations.length > 1;
-  const wk = DATA.kpis && DATA.kpis.weekOf ? DATA.kpis.weekOf : (DATA.weeks[DATA.weeks.length-1] || "");
   const scope = DATA.activeSlug === "index"
     ? `${DATA.locations.length} location${DATA.locations.length===1?"":"s"}`
     : DATA.scopeLabel;
   document.getElementById("subtitle").textContent =
-    `${scope} · ${DATA.weeks.length} week${DATA.weeks.length===1?"":"s"} · latest week of ${wk}`;
+    `${scope} · ${DATA.weeks.length} completed week${DATA.weeks.length===1?"":"s"}`;
 
   renderNav();
   renderKpis();

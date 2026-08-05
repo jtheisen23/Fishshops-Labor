@@ -43,9 +43,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--config", default="config.yaml", help="Path to config.yaml (default: config.yaml)")
     p.add_argument("--weeks", type=int, default=4, help="Number of trailing weeks to report (default: 4)")
     p.add_argument("--start", type=_date, help="Start date YYYY-MM-DD (overrides --weeks)")
-    p.add_argument("--end", type=_date, help="End date YYYY-MM-DD (default: end of last completed week)")
-    p.add_argument("--include-current-week", action="store_true",
-                   help="Include the current, in-progress week (default: only completed weeks)")
+    p.add_argument("--end", type=_date, help="As-of date YYYY-MM-DD (default: today)")
     p.add_argument("--sample", action="store_true", help="Use generated sample data instead of the Toast API")
     p.add_argument("--output-dir", help="Override output directory")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
@@ -54,6 +52,44 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
+
+
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _date_range_label(lo: date, hi: date) -> str:
+    if hi < lo:
+        return ""
+    if lo == hi:
+        return f"{_MONTHS[lo.month - 1]} {lo.day}"
+    return f"{_MONTHS[lo.month - 1]} {lo.day} – {_MONTHS[hi.month - 1]} {hi.day}"
+
+
+def _split_datasets(datasets: list[LocationDataset], keep) -> list[LocationDataset]:
+    """Return copies of the datasets keeping only orders/time entries whose
+    business date satisfies `keep(business_date)`."""
+    out: list[LocationDataset] = []
+    for ds in datasets:
+        nd = LocationDataset(location=ds.location)
+        nd.orders = [o for o in ds.orders if keep(o.business_date)]
+        nd.time_entries = [t for t in ds.time_entries if keep(t.business_date)]
+        out.append(nd)
+    return out
+
+
+def _window_totals(ds: LocationDataset, lo: date, hi: date) -> dict:
+    """Sum sales + labor for one location over [lo, hi] (inclusive)."""
+    net = cost = hours = 0.0
+    txns = 0
+    for o in ds.orders:
+        if not o.voided and lo <= o.business_date <= hi:
+            net += o.net_sales
+            txns += 1
+    for t in ds.time_entries:
+        if lo <= t.business_date <= hi:
+            cost += t.labor_cost
+            hours += t.total_hours
+    return {"netSales": net, "transactions": txns, "laborCost": cost, "laborHours": hours}
 
 
 def _apply_role_exclusions(datasets: list[LocationDataset], exclude_roles: list[str]) -> None:
@@ -85,21 +121,15 @@ def _log_job_titles(datasets: list[LocationDataset]) -> None:
 
 
 def _resolve_window(args: argparse.Namespace, week_start: str) -> tuple[date, date]:
+    """Pull window ends at `as_of` (today) so the in-progress week is included;
+    the split into completed vs current weeks happens downstream. Start reaches
+    back `--weeks` completed weeks before the current week."""
+    as_of = args.end or date.today()
     if args.start:
-        return args.start, (args.end or date.today())
-
-    # Anchor to whole weeks so the "latest week" is always a full week (deltas
-    # stay meaningful). By default the window ends at the last *completed* week.
-    today = args.end or date.today()
-    this_week_start = week_start_of(today, week_start)
-    if args.end:
-        end = args.end
-    elif args.include_current_week:
-        end = today
-    else:
-        end = this_week_start - timedelta(days=1)  # last day of the prior week
-    start = week_start_of(end, week_start) - timedelta(days=(args.weeks - 1) * 7)
-    return start, end
+        return args.start, as_of
+    current_week_start = week_start_of(as_of, week_start)
+    start = current_week_start - timedelta(days=args.weeks * 7)
+    return start, as_of
 
 
 def _pull_live(config: AppConfig, start: date, end: date) -> list[LocationDataset]:
@@ -147,28 +177,56 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.sample:
         log.info("Using generated sample data (no API calls).")
-        weeks = max(args.weeks, ((end - start).days // 7) + 1)
+        weeks = max(args.weeks, ((end - start).days // 7) + 2)
         datasets = build_sample_datasets(config.locations or None, weeks=weeks, end=end)
+        # Trim generated data to the exact window (the generator overshoots).
+        datasets = _split_datasets(datasets, lambda bd: start <= bd <= end)
     else:
         datasets = _pull_live(config, start, end)
 
     _apply_role_exclusions(datasets, config.report.exclude_roles)
     _log_job_titles(datasets)
 
-    metrics = aggregate_weekly(datasets, week_start=config.report.week_start)
+    ws = config.report.week_start
+    cws = week_start_of(end, ws)                 # current week start (Monday)
+    cur_hi = end - timedelta(days=1)             # current week through yesterday
+    day = timedelta(days=1)
+
+    # Completed weeks feed all the weekly boards; the current (in-progress) week
+    # feeds the current-week table + top KPI row.
+    completed = _split_datasets(datasets, lambda bd: bd < cws)
+    current = _split_datasets(datasets, lambda bd: cws <= bd <= cur_hi)
+
+    metrics = aggregate_weekly(completed, week_start=ws)
     if not metrics:
         log.warning("No data in the reporting window — nothing to write.")
         return 1
-    daily = aggregate_daily(datasets)
-    labor_by_role = labor_by_role_last_week(
-        datasets, config.report.week_start, config.report.role_groups
-    )
+    current_daily = aggregate_daily(current)
+    labor_by_role = labor_by_role_last_week(completed, ws, config.report.role_groups)
+
+    # Two-row KPI inputs per location: current week (vs same days prior week) and
+    # prior completed week (vs the week before it).
+    kpi_by_loc = {
+        ds.location.name: {
+            "current": _window_totals(ds, cws, cur_hi),
+            "priorSame": _window_totals(ds, cws - 7 * day, cur_hi - 7 * day),
+            "prior": _window_totals(ds, cws - 7 * day, cws - day),
+            "priorPrev": _window_totals(ds, cws - 14 * day, cws - 8 * day),
+        }
+        for ds in datasets
+    }
+    kpi_dates = {
+        "current": _date_range_label(cws, cur_hi),
+        "prior": _date_range_label(cws - 7 * day, cws - day),
+    }
+    has_current = cur_hi >= cws
 
     stamp = end.isoformat()
     xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report-{stamp}.xlsx", config.report.title)
     html_path = render_dashboard(
         metrics, f"{output_dir}/index.html", config.report.title,
-        daily=daily, labor_by_role=labor_by_role,
+        current_daily=current_daily, labor_by_role=labor_by_role,
+        kpi_by_loc=kpi_by_loc, kpi_dates=kpi_dates, has_current=has_current,
     )
 
     log.info("Wrote %s", xlsx_path)
