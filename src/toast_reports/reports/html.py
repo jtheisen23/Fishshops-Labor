@@ -280,12 +280,14 @@ def render_dashboard(
         "index", logo_uri, [], role_payload,
     )
 
-    # One page per location, each with its own daily board (no role matrix).
+    # One page per location, with its own daily board and its own role matrix
+    # (that single location as the only column).
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
         _write_page(
             out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
-            slugs[name], logo_uri, daily_by_loc.get(name, []), None,
+            slugs[name], logo_uri, daily_by_loc.get(name, []),
+            _labor_by_role_payload(labor_by_role, [name]),
         )
 
     return out_dir / "index.html"
@@ -665,7 +667,7 @@ function renderSplh() {
 function renderLaborByRole() {
   const card = document.getElementById("role-card");
   const d = DATA.laborByRole;
-  if (!d || DATA.locations.length <= 1 || !d.roles.length) { card.style.display = "none"; return; }
+  if (!d || !d.roles.length || !d.locations.length) { card.style.display = "none"; return; }
   card.style.display = "";
   const hm = h => Math.floor(h) + "h" + String(Math.round((h - Math.floor(h)) * 60)).padStart(2, "0") + "m";
   const head = "<thead><tr><th>Role</th>" +
