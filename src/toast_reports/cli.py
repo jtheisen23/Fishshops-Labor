@@ -56,6 +56,21 @@ def _date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
+def _apply_role_exclusions(datasets: list[LocationDataset], exclude_roles: list[str]) -> None:
+    """Drop time entries whose job title is in the exclusion list (case-insensitive),
+    so excluded roles (e.g. Register) count toward no labor figure anywhere."""
+    excluded = {r.strip().lower() for r in exclude_roles if r.strip()}
+    if not excluded:
+        return
+    for ds in datasets:
+        before = len(ds.time_entries)
+        ds.time_entries = [te for te in ds.time_entries if te.job.strip().lower() not in excluded]
+        removed = before - len(ds.time_entries)
+        if removed:
+            log.info("Excluded %d time entries (%s) for %s",
+                     removed, ", ".join(sorted(excluded)), ds.location.name)
+
+
 def _log_job_titles(datasets: list[LocationDataset]) -> None:
     """Log distinct job titles and their total hours — used to define the
     title -> role bucket mapping for the labor-by-role board."""
@@ -137,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         datasets = _pull_live(config, start, end)
 
+    _apply_role_exclusions(datasets, config.report.exclude_roles)
     _log_job_titles(datasets)
 
     metrics = aggregate_weekly(datasets, week_start=config.report.week_start)

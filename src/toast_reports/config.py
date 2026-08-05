@@ -36,6 +36,9 @@ class ReportSettings:
     week_start: str = "monday"  # monday | sunday
     output_dir: str = "output"
     title: str = "Weekly Labor & Sales Report"
+    # Job titles (case-insensitive) whose time entries are excluded from ALL
+    # labor figures — e.g. "Register", which is a POS role, not real labor.
+    exclude_roles: list[str] = field(default_factory=lambda: ["Register"])
 
 
 @dataclass
@@ -81,6 +84,7 @@ def load_config(config_path: str | os.PathLike[str] | None = "config.yaml") -> A
             week_start=str(r.get("week_start", report.week_start)).lower(),
             output_dir=str(r.get("output_dir", report.output_dir)),
             title=str(r.get("title", report.title)),
+            exclude_roles=[str(x) for x in (r.get("exclude_roles") or report.exclude_roles)],
         )
 
     # Env-var location list overrides/augments if provided. Each comma-separated
