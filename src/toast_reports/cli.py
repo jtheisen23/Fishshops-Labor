@@ -56,6 +56,19 @@ def _date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
+def _log_job_titles(datasets: list[LocationDataset]) -> None:
+    """Log distinct job titles and their total hours — used to define the
+    title -> role bucket mapping for the labor-by-role board."""
+    totals: dict[str, float] = {}
+    for ds in datasets:
+        for te in ds.time_entries:
+            totals[te.job] = totals.get(te.job, 0.0) + te.total_hours
+    if totals:
+        log.info("Job titles found (title: total hours):")
+        for title, hrs in sorted(totals.items(), key=lambda kv: -kv[1]):
+            log.info("  %-28s %.1f", title, hrs)
+
+
 def _resolve_window(args: argparse.Namespace, week_start: str) -> tuple[date, date]:
     if args.start:
         return args.start, (args.end or date.today())
@@ -123,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
         datasets = build_sample_datasets(config.locations or None, weeks=weeks, end=end)
     else:
         datasets = _pull_live(config, start, end)
+
+    _log_job_titles(datasets)
 
     metrics = aggregate_weekly(datasets, week_start=config.report.week_start)
     if not metrics:

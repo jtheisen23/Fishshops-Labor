@@ -124,10 +124,27 @@ class ToastClient:
         # name (e.g. "Restaurant Caddies"), so labels/buttons stay short.
         return general.get("locationName") or general.get("name") or None
 
+    def get_jobs(self, location: Location) -> dict[str, str]:
+        """Map job GUID -> job title (e.g. "Line Cook", "Server") from the Labor
+        API. Time entries only reference a job by GUID, so we resolve titles here.
+        Best-effort: on failure returns {} and titles fall back to the raw ref."""
+        try:
+            raw = self._get("/labor/v1/jobs", location.guid)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully
+            log.warning("Could not fetch jobs for %s: %s", location.guid, exc)
+            return {}
+        out: dict[str, str] = {}
+        for j in raw if isinstance(raw, list) else []:
+            guid, title = j.get("guid"), j.get("title")
+            if guid and title:
+                out[guid] = title
+        return out
+
     def get_time_entries(
         self, location: Location, start: datetime, end: datetime
     ) -> list[TimeEntry]:
         lo, hi = start.date(), end.date()
+        jobs = self.get_jobs(location)  # guid -> title
         raw = self._get(
             "/labor/v1/timeEntries",
             location.guid,
@@ -137,7 +154,7 @@ class ToastClient:
              "endDate": _iso_utc(end + timedelta(days=1))},
         )
         rows = raw if isinstance(raw, list) else []
-        entries = [_map_time_entry(r, location, hi) for r in rows]
+        entries = [_map_time_entry(r, location, hi, jobs) for r in rows]
         return [e for e in entries if lo <= e.business_date <= hi]
 
     def get_orders(
@@ -170,14 +187,19 @@ def _backoff_seconds(attempt: int, resp: requests.Response) -> float:
 # -- Raw JSON -> model mappings -------------------------------------------
 
 
-def _map_time_entry(row: dict, location: Location, fallback_date: date) -> TimeEntry:
+def _map_time_entry(
+    row: dict, location: Location, fallback_date: date, jobs: dict[str, str] | None = None
+) -> TimeEntry:
     job_ref = row.get("jobReference") or {}
     emp_ref = row.get("employeeReference") or {}
+    # Resolve the real job title from the jobs map (guid -> title); fall back to
+    # any inline title, then to a placeholder.
+    job_title = (jobs or {}).get(job_ref.get("guid")) or row.get("jobTitle") or "Unassigned"
     return TimeEntry(
         location_guid=location.guid,
         business_date=_parse_business_date(row.get("businessDate"), fallback_date),
         employee_id=str(emp_ref.get("guid", row.get("employeeExternalId", "unknown"))),
-        job=str(job_ref.get("entityType") or row.get("jobTitle") or "Unassigned"),
+        job=str(job_title),
         in_date=_parse_dt(row.get("inDate")),
         out_date=_parse_dt(row.get("outDate")),
         regular_hours=float(row.get("regularHours") or 0.0),

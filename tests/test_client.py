@@ -47,7 +47,10 @@ def test_orders_filtered_to_business_date_window():
 def test_time_entries_filtered_to_business_date_window():
     c = _client()
 
-    def fake_get(path, guid, params):
+    def fake_get(path, guid, params=None):
+        # /labor/v1/jobs returns [] here (no titles), then timeEntries returns rows.
+        if path.endswith("/jobs"):
+            return []
         return [
             {"businessDate": "20260706", "regularHours": 8, "hourlyWage": 15},
             {"businessDate": "20260705", "regularHours": 8, "hourlyWage": 15},  # out of window
