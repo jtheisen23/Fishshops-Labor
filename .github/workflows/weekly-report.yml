@@ -27,6 +27,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Guards the Cloudflare deploy step: it only runs once this secret is set.
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +57,20 @@ jobs:
           name: weekly-report-xlsx
           path: output/*.xlsx
 
+      # --- Private hosting: Cloudflare Pages (protected by Cloudflare Access) ---
+      # Runs only once CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets exist.
+      # Create a Pages project named "fishshops-labor" (Direct Upload) first.
+      - name: Deploy to Cloudflare Pages
+        if: ${{ env.CF_API_TOKEN != '' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy output --project-name=fishshops-labor --branch=main
+
+      # --- PUBLIC hosting: GitHub Pages. Disable this once Cloudflare Access is
+      #     confirmed working (Settings -> Pages -> Source: None), then remove
+      #     the upload step + deploy-pages job below. ---
       - name: Upload Pages artifact (HTML dashboard)
         uses: actions/upload-pages-artifact@v3
         with:
