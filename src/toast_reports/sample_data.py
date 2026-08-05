@@ -12,8 +12,13 @@ from datetime import date, datetime, time, timedelta
 
 from .models import Location, LocationDataset, OrderRecord, TimeEntry
 
-_JOBS = ["Server", "Line Cook", "Dishwasher", "Manager", "Host"]
-_WAGES = {"Server": 12.0, "Line Cook": 18.5, "Dishwasher": 15.0, "Manager": 28.0, "Host": 14.0}
+# Mirror the real Toast job titles so sample output exercises role bucketing
+# and the Register exclusion.
+_JOBS = ["Kitchen", "Staff", "Register", "Shift Capt", "Shift Lead", "General Manager", "Chef"]
+_WAGES = {
+    "Kitchen": 18.0, "Staff": 14.0, "Register": 13.0, "Shift Capt": 20.0,
+    "Shift Lead": 19.0, "General Manager": 30.0, "Chef": 28.0,
+}
 
 
 def build_sample_datasets(

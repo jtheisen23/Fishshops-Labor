@@ -19,7 +19,7 @@ import re
 import sys
 from datetime import date, datetime, time, timedelta
 
-from .aggregate import aggregate_daily, aggregate_weekly, week_start_of
+from .aggregate import aggregate_daily, aggregate_weekly, labor_by_role_last_week, week_start_of
 from .client import ToastClient
 from .config import AppConfig, load_config
 from .models import Location, LocationDataset
@@ -160,11 +160,15 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("No data in the reporting window — nothing to write.")
         return 1
     daily = aggregate_daily(datasets)
+    labor_by_role = labor_by_role_last_week(
+        datasets, config.report.week_start, config.report.role_groups
+    )
 
     stamp = end.isoformat()
     xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report-{stamp}.xlsx", config.report.title)
     html_path = render_dashboard(
-        metrics, f"{output_dir}/index.html", config.report.title, daily=daily
+        metrics, f"{output_dir}/index.html", config.report.title,
+        daily=daily, labor_by_role=labor_by_role,
     )
 
     log.info("Wrote %s", xlsx_path)

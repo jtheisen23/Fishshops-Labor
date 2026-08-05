@@ -39,6 +39,16 @@ class ReportSettings:
     # Job titles (case-insensitive) whose time entries are excluded from ALL
     # labor figures — e.g. "Register", which is a POS role, not real labor.
     exclude_roles: list[str] = field(default_factory=lambda: ["Register"])
+    # Ordered role buckets for the "Labor hours by role" board: bucket -> the
+    # Toast job titles that roll up into it. Titles not listed get their own row.
+    role_groups: dict = field(
+        default_factory=lambda: {
+            "Kitchen": ["Kitchen"],
+            "Staff": ["Staff"],
+            "Shift Capt/Lead": ["Shift Capt", "Shift Lead"],
+            "GM/Chef": ["General Manager", "Chef"],
+        }
+    )
 
 
 @dataclass
@@ -85,6 +95,7 @@ def load_config(config_path: str | os.PathLike[str] | None = "config.yaml") -> A
             output_dir=str(r.get("output_dir", report.output_dir)),
             title=str(r.get("title", report.title)),
             exclude_roles=[str(x) for x in (r.get("exclude_roles") or report.exclude_roles)],
+            role_groups=dict(r.get("role_groups") or report.role_groups),
         )
 
     # Env-var location list overrides/augments if provided. Each comma-separated

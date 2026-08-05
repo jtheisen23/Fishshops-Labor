@@ -54,6 +54,7 @@ def _build_payload(
     nav: list[dict],
     active_slug: str,
     daily_rows: list[dict],
+    labor_by_role: dict | None,
 ) -> dict:
     weeks = group_by_week(metrics)
     week_labels = [w.week_start.isoformat() for w in weeks]
@@ -92,6 +93,8 @@ def _build_payload(
         "kpis": _kpis(weeks),
         # Overview-only: SPLH by location across weeks, with avg + first->last change.
         "splhMatrix": _splh_matrix(weeks, present),
+        # Overview-only: labor hours by role x location for the latest week.
+        "laborByRole": labor_by_role,
         # Location-only: per-day Sales / Labor hours / SPLH.
         "daily": daily_rows,
     }
@@ -216,8 +219,11 @@ def _write_page(
     active_slug: str,
     logo_uri: str,
     daily_rows: list[dict],
+    labor_by_role: dict | None,
 ) -> None:
-    payload = _build_payload(metrics, title, scope_label, loc_index, nav, active_slug, daily_rows)
+    payload = _build_payload(
+        metrics, title, scope_label, loc_index, nav, active_slug, daily_rows, labor_by_role
+    )
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
     html = (
         _HTML_TEMPLATE.replace("__TITLE__", _escape(page_title))
@@ -232,6 +238,7 @@ def render_dashboard(
     out_path: str | Path,
     title: str,
     daily: list | None = None,
+    labor_by_role=None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -264,21 +271,39 @@ def render_dashboard(
     nav += [{"label": name, "href": f"{slugs[name]}.html", "slug": slugs[name]} for name in loc_names]
 
     logo_uri = _logo_data_uri()
+    role_payload = _labor_by_role_payload(labor_by_role, loc_names)
 
-    # Overview (all locations) — no per-day board here (it's location-specific).
+    # Overview (all locations) — daily board is location-specific (empty here);
+    # the labor-by-role matrix is a cross-location board (overview only).
     _write_page(
-        out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index", logo_uri, []
+        out_dir / "index.html", metrics, title, "All Locations", loc_index, nav,
+        "index", logo_uri, [], role_payload,
     )
 
-    # One page per location, each with its own daily board.
+    # One page per location, each with its own daily board (no role matrix).
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
         _write_page(
             out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
-            slugs[name], logo_uri, daily_by_loc.get(name, []),
+            slugs[name], logo_uri, daily_by_loc.get(name, []), None,
         )
 
     return out_dir / "index.html"
+
+
+def _labor_by_role_payload(labor_by_role, loc_names: list[str]) -> dict | None:
+    """Shape the LaborByRole aggregate into a JSON-friendly matrix, with
+    locations as columns ordered like the rest of the dashboard."""
+    if not labor_by_role or not labor_by_role.hours:
+        return None
+    cols = [n for n in loc_names if n in labor_by_role.hours]
+    return {
+        "weekOf": labor_by_role.week_start.isoformat(),
+        "roles": labor_by_role.role_order,
+        "locations": cols,
+        "cells": {loc: labor_by_role.hours.get(loc, {}) for loc in cols},
+        "totals": {loc: round(sum(labor_by_role.hours.get(loc, {}).values()), 1) for loc in cols},
+    }
 
 
 _WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -379,7 +404,10 @@ _HTML_TEMPLATE = r"""<!doctype html>
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; font-variant-numeric: normal; }
   /* Matrix/daily tables: only the first column is a label; the rest are numbers. */
   #splhTable th:nth-child(2), #splhTable td:nth-child(2),
-  #dailyTable th:nth-child(2), #dailyTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  #dailyTable th:nth-child(2), #dailyTable td:nth-child(2),
+  #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  #roleTable tr.total td { border-top: 2px solid var(--axis); }
+  .muted { color: var(--muted); }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -406,6 +434,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <h2>Sales per labor hour by location</h2>
     <p class="hint">Weekly SPLH by location, with the multi-week average and first-to-last change.</p>
     <div class="tablewrap"><table id="splhTable"></table></div>
+  </section>
+
+  <section class="card" id="role-card" style="display:none">
+    <h2>Labor hours by role</h2>
+    <p class="hint" id="role-week"></p>
+    <div class="tablewrap"><table id="roleTable"></table></div>
   </section>
 
   <section class="card">
@@ -627,6 +661,32 @@ function renderSplh() {
   document.getElementById("splhTable").innerHTML = head + body;
 }
 
+// Overview only: labor hours by role x location (latest week, Register excluded).
+function renderLaborByRole() {
+  const card = document.getElementById("role-card");
+  const d = DATA.laborByRole;
+  if (!d || DATA.locations.length <= 1 || !d.roles.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const hm = h => Math.floor(h) + "h" + String(Math.round((h - Math.floor(h)) * 60)).padStart(2, "0") + "m";
+  const head = "<thead><tr><th>Role</th>" +
+    d.locations.map(l => `<th>${l}</th>`).join("") + "</tr></thead>";
+  let body = "<tbody>";
+  d.roles.forEach(role => {
+    body += `<tr><td>${role}</td>` + d.locations.map(l => {
+      const v = (d.cells[l] || {})[role] || 0;
+      const tot = d.totals[l] || 0;
+      if (!v) return "<td>—</td>";
+      const p = tot ? (v / tot * 100).toFixed(1) : "0.0";
+      return `<td>${hm(v)} <span class="muted">(${p}%)</span></td>`;
+    }).join("") + "</tr>";
+  });
+  body += `<tr class="total"><td><strong>Total (ex-Register)</strong></td>` +
+    d.locations.map(l => `<td><strong>${(d.totals[l] || 0).toFixed(1)}h</strong></td>`).join("") +
+    "</tr></tbody>";
+  document.getElementById("roleTable").innerHTML = head + body;
+  document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · Register excluded";
+}
+
 // Location only: per-day Sales / Labor hours / SPLH.
 function renderDaily() {
   const card = document.getElementById("daily-card");
@@ -661,6 +721,7 @@ function renderAll() {
   renderNav();
   renderKpis();
   renderSplh();
+  renderLaborByRole();
   renderDaily();
 
   // Chart headings: "… by location" only makes sense on the multi-location overview.

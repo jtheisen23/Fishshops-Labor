@@ -181,6 +181,50 @@ class DailyMetrics:
         return self.labor_cost / self.net_sales if self.net_sales else 0.0
 
 
+@dataclass
+class LaborByRole:
+    """Labor hours grouped by role bucket x location, for the latest week."""
+
+    week_start: date
+    role_order: list[str]
+    # hours[location_name][role_bucket] = hours
+    hours: dict[str, dict[str, float]] = field(default_factory=dict)
+
+
+def labor_by_role_last_week(
+    datasets: list[LocationDataset], week_start: str, role_groups: dict
+) -> LaborByRole | None:
+    """Sum labor hours per role bucket per location for the most recent week
+    present in the data. Titles not in any bucket get their own row. Assumes
+    excluded roles (e.g. Register) were already dropped from the datasets."""
+    title_to_bucket: dict[str, str] = {}
+    for bucket, titles in role_groups.items():
+        for t in titles:
+            title_to_bucket[str(t).strip().lower()] = bucket
+
+    all_dates = [te.business_date for ds in datasets for te in ds.time_entries]
+    if not all_dates:
+        return None
+    latest = max(week_start_of(d, week_start) for d in all_dates)
+
+    hours: dict[str, dict[str, float]] = {}
+    extra: list[str] = []
+    for ds in datasets:
+        for te in ds.time_entries:
+            if week_start_of(te.business_date, week_start) != latest:
+                continue
+            bucket = title_to_bucket.get(te.job.strip().lower())
+            if bucket is None:  # unmapped title -> its own row
+                bucket = te.job
+                if bucket not in extra:
+                    extra.append(bucket)
+            loc = hours.setdefault(ds.location.name, {})
+            loc[bucket] = loc.get(bucket, 0.0) + te.total_hours
+
+    role_order = list(role_groups.keys()) + sorted(extra)
+    return LaborByRole(week_start=latest, role_order=role_order, hours=hours)
+
+
 def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
     """Aggregate raw orders + time entries into (location, business day) rows."""
     buckets: dict[tuple[str, date], DailyMetrics] = {}
