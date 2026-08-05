@@ -17,7 +17,7 @@ import argparse
 import logging
 import re
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 from .aggregate import aggregate_daily, aggregate_weekly, labor_by_role_last_week, week_start_of
 from .client import ToastClient
@@ -55,6 +55,20 @@ def _date(s: str) -> date:
 
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _synced_at_label() -> str:
+    """Human-readable 'last synced' stamp in San Diego time. This reflects when
+    the report was built (every 4 hours in CI), which is when the current-week
+    figures last refreshed."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    # e.g. "Aug 5, 2026 at 2:05 PM PDT" (strip leading zeros for readability).
+    stamp = now.strftime("%b %d, %Y at %I:%M %p %Z")
+    return stamp.replace(" 0", " ").replace("at 0", "at ")
 
 
 def _date_range_label(lo: date, hi: date) -> str:
@@ -227,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         metrics, f"{output_dir}/index.html", config.report.title,
         current_daily=current_daily, labor_by_role=labor_by_role,
         kpi_by_loc=kpi_by_loc, kpi_dates=kpi_dates, has_current=has_current,
+        synced_at=_synced_at_label(),
     )
 
     log.info("Wrote %s", xlsx_path)

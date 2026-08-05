@@ -99,6 +99,8 @@ def _build_payload(
         "laborByRole": labor_by_role,
         # Location-only: per-day Sales / Labor hours / SPLH.
         "daily": daily_rows,
+        # When the report was last built/synced (San Diego time).
+        "syncedAt": kpi_ctx.get("synced_at", ""),
     }
 
 
@@ -248,6 +250,7 @@ def render_dashboard(
     kpi_by_loc: dict | None = None,
     kpi_dates: dict | None = None,
     has_current: bool = False,
+    synced_at: str = "",
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -261,6 +264,7 @@ def render_dashboard(
         "by_loc": kpi_by_loc or {},
         "dates": kpi_dates or {},
         "has_current": has_current,
+        "synced_at": synced_at,
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -397,6 +401,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   .nav a:hover { border-color: var(--accent); color: var(--ink); }
   .nav a.active { background: var(--accent); color: #fff; border-color: transparent; }
   .kpi-head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 700; margin: 20px 0 8px; }
+  .synced { font-size: 11px; color: var(--muted); margin: -2px 0 8px; }
+  .synced .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: middle; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 0 0 8px; }
   .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
@@ -447,6 +453,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section id="kpi-current" aria-label="Current week summary" style="display:none">
     <div class="kpi-head" id="kpi-current-head"></div>
+    <div class="synced" id="synced" style="display:none"></div>
     <div class="kpis" id="kpis-current"></div>
   </section>
   <section id="kpi-prior" aria-label="Prior week summary">
@@ -643,13 +650,21 @@ function kpiTiles(row) {
 function renderKpis() {
   const rows = DATA.kpiRows || {};
   const curSec = document.getElementById("kpi-current");
+  const synced = document.getElementById("synced");
   if (rows.current) {
     curSec.style.display = "";
     document.getElementById("kpi-current-head").textContent =
       "Current week" + (rows.current.dates ? " · " + rows.current.dates : "");
     document.getElementById("kpis-current").innerHTML = kpiTiles(rows.current);
+    if (DATA.syncedAt) {
+      synced.style.display = "";
+      synced.innerHTML = `<span class="dot"></span>Last synced ${DATA.syncedAt}`;
+    } else {
+      synced.style.display = "none";
+    }
   } else {
     curSec.style.display = "none";
+    synced.style.display = "none";
   }
   if (rows.prior) {
     document.getElementById("kpi-prior-head").textContent =
@@ -777,7 +792,9 @@ function renderAll() {
   lineChart("chart-labor", DATA.charts.laborPct, pct);
   lineChart("chart-txn", DATA.charts.transactions, num);
   renderTable();
-  document.getElementById("foot").textContent = "Generated from Toast POS data. Net sales are pre-tax.";
+  document.getElementById("foot").textContent =
+    "Generated from Toast POS data. Net sales are pre-tax."
+    + (DATA.syncedAt ? " · Last synced " + DATA.syncedAt : "");
 }
 
 document.getElementById("themeToggle").addEventListener("click", () => {
