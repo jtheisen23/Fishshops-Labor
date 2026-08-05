@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ws = config.report.week_start
     cws = week_start_of(end, ws)                 # current week start (Monday)
-    cur_hi = end - timedelta(days=1)             # current week through yesterday
+    cur_hi = end                                 # current week through today (running)
     day = timedelta(days=1)
 
     # Completed weeks feed all the weekly boards; the current (in-progress) week

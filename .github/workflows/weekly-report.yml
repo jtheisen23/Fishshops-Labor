@@ -8,8 +8,9 @@ on:
     branches:
       - claude/toast-pos-weekly-reports-nft91i
   schedule:
-    # Daily rebuild ~6am Pacific so the current-week board refreshes each day.
-    - cron: "0 13 * * *"
+    # Rebuild every 4 hours so the current-week (running, includes today) boards
+    # stay fresh through the day.
+    - cron: "0 */4 * * *"
   workflow_dispatch:
     inputs:
       weeks:
