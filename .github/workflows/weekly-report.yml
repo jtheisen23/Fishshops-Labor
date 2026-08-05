@@ -1,0 +1,67 @@
+name: Weekly Toast Report
+
+# Runs every Monday at 13:00 UTC (adjust to your timezone), and on demand.
+on:
+  schedule:
+    - cron: "0 13 * * 1"
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: "Number of trailing weeks to report"
+        required: false
+        default: "4"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate reports
+        env:
+          PYTHONPATH: src
+          TOAST_API_HOST: ${{ secrets.TOAST_API_HOST }}
+          TOAST_CLIENT_ID: ${{ secrets.TOAST_CLIENT_ID }}
+          TOAST_CLIENT_SECRET: ${{ secrets.TOAST_CLIENT_SECRET }}
+          TOAST_USER_ACCESS_TYPE: ${{ secrets.TOAST_USER_ACCESS_TYPE }}
+          TOAST_RESTAURANT_GUIDS: ${{ secrets.TOAST_RESTAURANT_GUIDS }}
+        run: |
+          python -m toast_reports --weeks "${{ github.event.inputs.weeks || '4' }}" --output-dir output
+
+      - name: Upload workbook artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-report-xlsx
+          path: output/*.xlsx
+
+      - name: Upload Pages artifact (HTML dashboard)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+  deploy-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

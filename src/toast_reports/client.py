@@ -1,0 +1,186 @@
+"""Toast API client.
+
+Pulls raw Labor (time entries) and Orders data for a location over a date range
+and maps them into the normalized models. Handles pagination, rate limiting
+(HTTP 429) and transient errors with exponential backoff.
+
+NOTE ON FIELD NAMES: Toast's JSON schema varies slightly by API version and by
+what your integration is provisioned for. The mapping functions below
+(``_map_time_entry`` / ``_map_order``) are the single place to adjust if a field
+lands somewhere different in your account. Every access is defensive so a missing
+field degrades to zero rather than crashing the whole run.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import date, datetime, timezone
+
+import requests
+
+from .auth import ToastAuth
+from .config import ToastCredentials
+from .models import Location, OrderRecord, TimeEntry
+
+log = logging.getLogger(__name__)
+
+_MAX_RETRIES = 5
+_ORDERS_PAGE_SIZE = 100
+
+
+def _iso_utc(dt: datetime) -> str:
+    """Toast expects ISO-8601 with millis and a zone, e.g. 2026-08-01T00:00:00.000+0000."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_business_date(value: str | int | None, fallback: date) -> date:
+    """Business date arrives as yyyyMMdd (int or str) or an ISO date."""
+    if value is None:
+        return fallback
+    s = str(value)
+    try:
+        if len(s) == 8 and s.isdigit():
+            return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except (ValueError, IndexError):
+        return fallback
+
+
+class ToastClient:
+    def __init__(self, credentials: ToastCredentials, session: requests.Session | None = None):
+        self._creds = credentials
+        self._session = session or requests.Session()
+        self._auth = ToastAuth(credentials, self._session)
+
+    # -- HTTP plumbing -----------------------------------------------------
+
+    def _get(self, path: str, restaurant_guid: str, params: dict | None = None) -> object:
+        url = f"{self._creds.host}{path}"
+        for attempt in range(_MAX_RETRIES):
+            headers = {
+                "Authorization": f"Bearer {self._auth.token()}",
+                "Toast-Restaurant-External-ID": restaurant_guid,
+                "Accept": "application/json",
+            }
+            resp = self._session.get(url, headers=headers, params=params, timeout=60)
+
+            if resp.status_code == 429 or resp.status_code >= 500:
+                wait = _backoff_seconds(attempt, resp)
+                log.warning("Toast %s -> %s; retry %d/%d in %.1fs",
+                            path, resp.status_code, attempt + 1, _MAX_RETRIES, wait)
+                time.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        raise RuntimeError(f"Toast request to {path} failed after {_MAX_RETRIES} retries")
+
+    def _get_paginated(self, path: str, restaurant_guid: str, params: dict) -> list[dict]:
+        """Page through an endpoint that supports ?page=&pageSize=."""
+        results: list[dict] = []
+        page = 1
+        while True:
+            page_params = {**params, "page": page, "pageSize": _ORDERS_PAGE_SIZE}
+            batch = self._get(path, restaurant_guid, page_params)
+            if not isinstance(batch, list) or not batch:
+                break
+            results.extend(batch)
+            if len(batch) < _ORDERS_PAGE_SIZE:
+                break
+            page += 1
+        return results
+
+    # -- Public data pulls -------------------------------------------------
+
+    def get_time_entries(
+        self, location: Location, start: datetime, end: datetime
+    ) -> list[TimeEntry]:
+        raw = self._get(
+            "/labor/v1/timeEntries",
+            location.guid,
+            {"startDate": _iso_utc(start), "endDate": _iso_utc(end)},
+        )
+        rows = raw if isinstance(raw, list) else []
+        return [_map_time_entry(r, location, end.date()) for r in rows]
+
+    def get_orders(
+        self, location: Location, start: datetime, end: datetime
+    ) -> list[OrderRecord]:
+        raw = self._get_paginated(
+            "/orders/v2/ordersBulk",
+            location.guid,
+            {"startDate": _iso_utc(start), "endDate": _iso_utc(end)},
+        )
+        return [_map_order(r, location, end.date()) for r in raw]
+
+
+def _backoff_seconds(attempt: int, resp: requests.Response) -> float:
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return min(2.0 ** attempt, 30.0)
+
+
+# -- Raw JSON -> model mappings -------------------------------------------
+
+
+def _map_time_entry(row: dict, location: Location, fallback_date: date) -> TimeEntry:
+    job_ref = row.get("jobReference") or {}
+    emp_ref = row.get("employeeReference") or {}
+    return TimeEntry(
+        location_guid=location.guid,
+        business_date=_parse_business_date(row.get("businessDate"), fallback_date),
+        employee_id=str(emp_ref.get("guid", row.get("employeeExternalId", "unknown"))),
+        job=str(job_ref.get("entityType") or row.get("jobTitle") or "Unassigned"),
+        in_date=_parse_dt(row.get("inDate")),
+        out_date=_parse_dt(row.get("outDate")),
+        regular_hours=float(row.get("regularHours") or 0.0),
+        overtime_hours=float(row.get("overtimeHours") or 0.0),
+        hourly_wage=float(row.get("hourlyWage") or 0.0),
+        tips=float(row.get("declaredCashTips") or 0.0)
+        + float(row.get("nonCashTips") or 0.0),
+    )
+
+
+def _map_order(row: dict, location: Location, fallback_date: date) -> OrderRecord:
+    checks = row.get("checks") or []
+    net_sales = 0.0
+    tax = 0.0
+    tips = 0.0
+    guests = int(row.get("numberOfGuests") or 0)
+
+    for check in checks:
+        # `amount` is the pre-tax total for the check; `taxAmount` the tax.
+        net_sales += float(check.get("amount") or 0.0)
+        tax += float(check.get("taxAmount") or 0.0)
+        for payment in check.get("payments") or []:
+            tips += float(payment.get("tipAmount") or 0.0)
+
+    return OrderRecord(
+        location_guid=location.guid,
+        business_date=_parse_business_date(row.get("businessDate"), fallback_date),
+        order_guid=str(row.get("guid", "")),
+        opened_at=_parse_dt(row.get("openedDate") or row.get("createdDate")),
+        guest_count=guests,
+        check_count=len(checks),
+        net_sales=net_sales,
+        tax=tax,
+        tips=tips,
+        voided=bool(row.get("voided") or False),
+    )

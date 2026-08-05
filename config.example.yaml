@@ -1,0 +1,22 @@
+# Copy to `config.yaml` and edit. Secrets stay in `.env` / environment variables;
+# this file holds non-secret settings and the location list.
+
+# Which locations (Toast restaurants) to include in reports.
+# `guid` is the Toast restaurant GUID (Toast-Restaurant-External-ID).
+# `name` is a friendly label used in report titles and filenames.
+# `timezone` is an IANA name used to bucket business days into weeks.
+locations:
+  - name: "Fish Shop — Downtown"
+    guid: "REPLACE-WITH-RESTAURANT-GUID-A"
+    timezone: "America/New_York"
+  - name: "Fish Shop — Harbor"
+    guid: "REPLACE-WITH-RESTAURANT-GUID-B"
+    timezone: "America/New_York"
+
+report:
+  # First day of the reporting week: monday | sunday
+  week_start: "monday"
+  # Where generated files are written.
+  output_dir: "output"
+  # Title shown on the dashboard.
+  title: "Weekly Labor & Sales Report"
