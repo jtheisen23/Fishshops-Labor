@@ -148,3 +148,60 @@ def group_by_week(metrics: list[WeeklyMetrics]) -> list[CompanyWeek]:
     for m in metrics:
         weeks.setdefault(m.week_start, CompanyWeek(week_start=m.week_start)).rows.append(m)
     return [weeks[k] for k in sorted(weeks)]
+
+
+@dataclass
+class DailyMetrics:
+    """One location for one business day (used by the per-location daily board)."""
+
+    location_guid: str
+    location_name: str
+    business_date: date
+
+    net_sales: float = 0.0
+    transaction_count: int = 0
+    regular_hours: float = 0.0
+    overtime_hours: float = 0.0
+    labor_cost: float = 0.0
+
+    @property
+    def labor_hours(self) -> float:
+        return self.regular_hours + self.overtime_hours
+
+    @property
+    def sales_per_labor_hour(self) -> float:
+        return self.net_sales / self.labor_hours if self.labor_hours else 0.0
+
+    @property
+    def avg_check(self) -> float:
+        return self.net_sales / self.transaction_count if self.transaction_count else 0.0
+
+    @property
+    def labor_pct(self) -> float:
+        return self.labor_cost / self.net_sales if self.net_sales else 0.0
+
+
+def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
+    """Aggregate raw orders + time entries into (location, business day) rows."""
+    buckets: dict[tuple[str, date], DailyMetrics] = {}
+
+    def bucket(ds: LocationDataset, day: date) -> DailyMetrics:
+        key = (ds.location.guid, day)
+        if key not in buckets:
+            buckets[key] = DailyMetrics(ds.location.guid, ds.location.name, day)
+        return buckets[key]
+
+    for ds in datasets:
+        for order in ds.orders:
+            if order.voided:
+                continue
+            m = bucket(ds, order.business_date)
+            m.net_sales += order.net_sales
+            m.transaction_count += 1
+        for te in ds.time_entries:
+            m = bucket(ds, te.business_date)
+            m.regular_hours += te.regular_hours
+            m.overtime_hours += te.overtime_hours
+            m.labor_cost += te.labor_cost
+
+    return sorted(buckets.values(), key=lambda m: (m.business_date, m.location_name))

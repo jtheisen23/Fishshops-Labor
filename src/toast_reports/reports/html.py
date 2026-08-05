@@ -53,6 +53,7 @@ def _build_payload(
     loc_index: dict[str, int],
     nav: list[dict],
     active_slug: str,
+    daily_rows: list[dict],
 ) -> dict:
     weeks = group_by_week(metrics)
     week_labels = [w.week_start.isoformat() for w in weeks]
@@ -89,7 +90,32 @@ def _build_payload(
         },
         "table": _table_rows(weeks),
         "kpis": _kpis(weeks),
+        # Overview-only: SPLH by location across weeks, with avg + first->last change.
+        "splhMatrix": _splh_matrix(weeks, present),
+        # Location-only: per-day Sales / Labor hours / SPLH.
+        "daily": daily_rows,
     }
+
+
+def _splh_matrix(weeks, present: list[str]) -> dict:
+    """Sales-per-labor-hour for each location across the weeks, plus the
+    multi-week average and the first->last percentage change."""
+    rows = []
+    for name in present:
+        values: list[float | None] = []
+        for w in weeks:
+            v = None
+            for r in w.rows:
+                if r.location_name == name:
+                    v = round(r.sales_per_labor_hour, 2)
+            values.append(v)
+        got = [v for v in values if v is not None]
+        avg = round(sum(got) / len(got), 2) if got else None
+        change = None
+        if len(got) >= 2 and got[0]:
+            change = round((got[-1] - got[0]) / got[0], 4)
+        rows.append({"name": name, "values": values, "avg": avg, "change": change})
+    return {"weeks": [w.week_start.isoformat() for w in weeks], "rows": rows}
 
 
 def _table_rows(weeks) -> list[dict]:
@@ -189,8 +215,9 @@ def _write_page(
     nav: list[dict],
     active_slug: str,
     logo_uri: str,
+    daily_rows: list[dict],
 ) -> None:
-    payload = _build_payload(metrics, title, scope_label, loc_index, nav, active_slug)
+    payload = _build_payload(metrics, title, scope_label, loc_index, nav, active_slug, daily_rows)
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
     html = (
         _HTML_TEMPLATE.replace("__TITLE__", _escape(page_title))
@@ -200,7 +227,12 @@ def _write_page(
     path.write_text(html, encoding="utf-8")
 
 
-def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: str) -> Path:
+def render_dashboard(
+    metrics: list[WeeklyMetrics],
+    out_path: str | Path,
+    title: str,
+    daily: list | None = None,
+) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
     out_path = Path(out_path)
@@ -209,6 +241,13 @@ def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: 
 
     loc_names = _location_order(metrics)
     loc_index = {name: i for i, name in enumerate(loc_names)}
+
+    # Daily rows grouped by location (for the per-location daily board).
+    daily_by_loc: dict[str, list[dict]] = {}
+    for d in daily or []:
+        daily_by_loc.setdefault(d.location_name, []).append(_daily_row(d))
+    for rows in daily_by_loc.values():
+        rows.sort(key=lambda r: r["day"], reverse=True)  # most recent first
 
     # Unique slug per location (guard against collisions).
     slugs: dict[str, str] = {}
@@ -226,17 +265,33 @@ def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: 
 
     logo_uri = _logo_data_uri()
 
-    # Overview (all locations).
-    _write_page(out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index", logo_uri)
+    # Overview (all locations) — no per-day board here (it's location-specific).
+    _write_page(
+        out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index", logo_uri, []
+    )
 
-    # One page per location.
+    # One page per location, each with its own daily board.
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
         _write_page(
-            out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav, slugs[name], logo_uri
+            out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
+            slugs[name], logo_uri, daily_by_loc.get(name, []),
         )
 
     return out_dir / "index.html"
+
+
+_WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _daily_row(d) -> dict:
+    return {
+        "day": d.business_date.isoformat(),
+        "dow": _WEEKDAY[d.business_date.weekday()],
+        "netSales": round(d.net_sales, 2),
+        "laborHours": round(d.labor_hours, 1),
+        "salesPerLaborHour": round(d.sales_per_labor_hour, 2),
+    }
 
 
 def _escape(s: str) -> str:
@@ -322,6 +377,9 @@ _HTML_TEMPLATE = r"""<!doctype html>
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; font-variant-numeric: normal; }
+  /* Matrix/daily tables: only the first column is a label; the rest are numbers. */
+  #splhTable th:nth-child(2), #splhTable td:nth-child(2),
+  #dailyTable th:nth-child(2), #dailyTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -344,6 +402,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section class="kpis" id="kpis" aria-label="Latest week summary"></section>
 
+  <section class="card" id="splh-card" style="display:none">
+    <h2>Sales per labor hour by location</h2>
+    <p class="hint">Weekly SPLH by location, with the multi-week average and first-to-last change.</p>
+    <div class="tablewrap"><table id="splhTable"></table></div>
+  </section>
+
   <section class="card">
     <h2 id="title-net">Net sales</h2>
     <p class="hint">Weekly net sales (pre-tax).</p>
@@ -363,6 +427,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <p class="hint">Weekly order/ticket counts.</p>
     <div class="legend" id="legend-txn"></div>
     <div class="chart" id="chart-txn"></div>
+  </section>
+
+  <section class="card" id="daily-card" style="display:none">
+    <h2>Daily detail</h2>
+    <p class="hint">Sales, labor hours, and sales per labor hour by day (most recent first).</p>
+    <div class="tablewrap"><table id="dailyTable"></table></div>
   </section>
 
   <section class="card">
@@ -531,6 +601,46 @@ function renderTable() {
   t.innerHTML = head + body;
 }
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDay(iso) { const p = iso.split("-"); return MONTHS[+p[1]-1] + " " + (+p[2]); }
+function changeCell(change) {
+  if (change == null) return "—";
+  const up = change > 0.0005, down = change < -0.0005;
+  const cls = up ? "up" : down ? "down" : "flat";
+  return `<span class="delta ${cls}">${change > 0 ? "+" : ""}${(change*100).toFixed(1)}%</span>`;
+}
+
+// Overview only: SPLH by location across weeks + avg + change.
+function renderSplh() {
+  const card = document.getElementById("splh-card");
+  const m = DATA.splhMatrix;
+  if (!m || DATA.locations.length <= 1 || !m.rows.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const head = "<thead><tr><th>Location</th>" +
+    m.weeks.map(w => `<th>${fmtDay(w)}</th>`).join("") +
+    "<th>Avg</th><th>Change</th></tr></thead>";
+  const body = "<tbody>" + m.rows.map(r =>
+    `<tr><td>${r.name}</td>` +
+    r.values.map(v => `<td>${money2(v)}</td>`).join("") +
+    `<td><strong>${money2(r.avg)}</strong></td><td>${changeCell(r.change)}</td></tr>`
+  ).join("") + "</tbody>";
+  document.getElementById("splhTable").innerHTML = head + body;
+}
+
+// Location only: per-day Sales / Labor hours / SPLH.
+function renderDaily() {
+  const card = document.getElementById("daily-card");
+  const rows = DATA.daily || [];
+  if (!rows.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const head = "<thead><tr><th>Day</th><th>Sales</th><th>Labor Hrs</th><th>Sales / Labor Hr</th></tr></thead>";
+  const body = "<tbody>" + rows.map(r =>
+    `<tr><td>${r.dow} ${fmtDay(r.day)}</td><td>${money2(r.netSales)}</td>` +
+    `<td>${num1(r.laborHours)}</td><td>${money2(r.salesPerLaborHour)}</td></tr>`
+  ).join("") + "</tbody>";
+  document.getElementById("dailyTable").innerHTML = head + body;
+}
+
 function renderNav() {
   const mount = document.getElementById("nav");
   mount.innerHTML = DATA.nav.map(n =>
@@ -550,6 +660,8 @@ function renderAll() {
 
   renderNav();
   renderKpis();
+  renderSplh();
+  renderDaily();
 
   // Chart headings: "… by location" only makes sense on the multi-location overview.
   document.getElementById("title-net").textContent = byLoc ? "Net sales by location" : "Net sales";
