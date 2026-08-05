@@ -10,7 +10,7 @@ full data table for accessibility.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+import re
 from pathlib import Path
 
 from ..aggregate import WeeklyMetrics, group_by_week
@@ -28,33 +28,49 @@ def _fmt_pct(v: float) -> str:
     return f"{v * 100:.1f}%"
 
 
-def _build_payload(metrics: list[WeeklyMetrics], title: str) -> dict:
-    weeks = group_by_week(metrics)
-    week_labels = [w.week_start.isoformat() for w in weeks]
-
-    # Stable location ordering (by total net sales, biggest first) -> color slots.
+def _location_order(metrics: list[WeeklyMetrics]) -> list[str]:
+    """Location names ordered by total net sales (biggest first). This order
+    drives the color slots, so every location keeps the same color on the
+    overview page and on its own page."""
     totals: dict[str, float] = {}
     for m in metrics:
         totals[m.location_name] = totals.get(m.location_name, 0.0) + m.net_sales
-    loc_names = sorted(totals, key=lambda n: totals[n], reverse=True)
-    loc_index = {name: i for i, name in enumerate(loc_names)}
+    return sorted(totals, key=lambda n: totals[n], reverse=True)
+
+
+def _build_payload(
+    metrics: list[WeeklyMetrics],
+    title: str,
+    scope_label: str,
+    loc_index: dict[str, int],
+    nav: list[dict],
+    active_slug: str,
+) -> dict:
+    weeks = group_by_week(metrics)
+    week_labels = [w.week_start.isoformat() for w in weeks]
+
+    # Locations present in *this* page's metrics, ordered by their global slot.
+    present = sorted({m.location_name for m in metrics}, key=lambda n: loc_index.get(n, 999))
 
     # Per-location series aligned to week_labels (None where no data that week).
     def series(metric: str) -> list[dict]:
         out = []
-        for name in loc_names:
+        for name in present:
             values: list[float | None] = [None] * len(weeks)
             for wi, w in enumerate(weeks):
                 for r in w.rows:
                     if r.location_name == name:
                         values[wi] = round(float(getattr(r, metric)), 4)
-            out.append({"name": name, "slot": loc_index[name], "values": values})
+            out.append({"name": name, "slot": loc_index.get(name, 0), "values": values})
         return out
 
-    payload = {
+    return {
         "title": title,
+        "scopeLabel": scope_label,
+        "nav": nav,
+        "activeSlug": active_slug,
         "weeks": week_labels,
-        "locations": loc_names,
+        "locations": present,
         "seriesLight": _SERIES_LIGHT,
         "seriesDark": _SERIES_DARK,
         "charts": {
@@ -66,7 +82,6 @@ def _build_payload(metrics: list[WeeklyMetrics], title: str) -> dict:
         "table": _table_rows(weeks),
         "kpis": _kpis(weeks),
     }
-    return payload
 
 
 def _table_rows(weeks) -> list[dict]:
@@ -134,15 +149,61 @@ def _kpis(weeks) -> dict:
     }
 
 
-def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: str) -> Path:
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _build_payload(metrics, title)
-    html = _HTML_TEMPLATE.replace("__TITLE__", _escape(title)).replace(
+def _slug(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "location"
+
+
+def _write_page(
+    path: Path,
+    metrics: list[WeeklyMetrics],
+    title: str,
+    scope_label: str,
+    loc_index: dict[str, int],
+    nav: list[dict],
+    active_slug: str,
+) -> None:
+    payload = _build_payload(metrics, title, scope_label, loc_index, nav, active_slug)
+    page_title = title if active_slug == "index" else f"{title} — {scope_label}"
+    html = _HTML_TEMPLATE.replace("__TITLE__", _escape(page_title)).replace(
         "__DATA__", json.dumps(payload)
     )
-    out_path.write_text(html, encoding="utf-8")
-    return out_path
+    path.write_text(html, encoding="utf-8")
+
+
+def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: str) -> Path:
+    """Write the overview page (index.html) plus one page per location, all in
+    the same directory and cross-linked by a button nav. Returns the index path."""
+    out_path = Path(out_path)
+    out_dir = out_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    loc_names = _location_order(metrics)
+    loc_index = {name: i for i, name in enumerate(loc_names)}
+
+    # Unique slug per location (guard against collisions).
+    slugs: dict[str, str] = {}
+    used: set[str] = {"index"}
+    for name in loc_names:
+        base = _slug(name)
+        s, n = base, 2
+        while s in used:
+            s, n = f"{base}-{n}", n + 1
+        used.add(s)
+        slugs[name] = s
+
+    nav = [{"label": "All Locations", "href": "index.html", "slug": "index"}]
+    nav += [{"label": name, "href": f"{slugs[name]}.html", "slug": slugs[name]} for name in loc_names]
+
+    # Overview (all locations).
+    _write_page(out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index")
+
+    # One page per location.
+    for name in loc_names:
+        loc_metrics = [m for m in metrics if m.location_name == name]
+        _write_page(out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav, slugs[name])
+
+    return out_dir / "index.html"
 
 
 def _escape(s: str) -> str:
@@ -166,21 +227,21 @@ _HTML_TEMPLATE = r"""<!doctype html>
     --page: #f9f9f7; --surface: #fcfcfb; --border: rgba(11,11,11,0.10);
     --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --grid: #e1e0d9; --axis: #c3c2b7;
-    --good: #006300; --bad: #d03b3b;
+    --good: #006300; --bad: #d03b3b; --accent: #2a78d6;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
       --page: #0d0d0d; --surface: #1a1a19; --border: rgba(255,255,255,0.10);
       --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
       --grid: #2c2c2a; --axis: #383835;
-      --good: #0ca30c; --bad: #d03b3b;
+      --good: #0ca30c; --bad: #d03b3b; --accent: #3987e5;
     }
   }
   :root[data-theme="dark"] {
     --page: #0d0d0d; --surface: #1a1a19; --border: rgba(255,255,255,0.10);
     --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835;
-    --good: #0ca30c; --bad: #d03b3b;
+    --good: #0ca30c; --bad: #d03b3b; --accent: #3987e5;
   }
   * { box-sizing: border-box; }
   body {
@@ -196,6 +257,14 @@ _HTML_TEMPLATE = r"""<!doctype html>
     background: var(--surface); color: var(--ink-2); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
   }
+  .nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 6px; }
+  .nav a {
+    text-decoration: none; font-size: 13px; padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--ink-2); background: var(--surface);
+    white-space: nowrap;
+  }
+  .nav a:hover { border-color: var(--accent); color: var(--ink); }
+  .nav a.active { background: var(--accent); color: #fff; border-color: transparent; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 22px 0; }
   .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
@@ -235,25 +304,27 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <button class="theme" id="themeToggle" type="button">Toggle theme</button>
   </header>
 
+  <nav class="nav" id="nav" aria-label="Locations"></nav>
+
   <section class="kpis" id="kpis" aria-label="Latest week summary"></section>
 
   <section class="card">
-    <h2>Net sales by location</h2>
-    <p class="hint">Weekly net sales (pre-tax) per location.</p>
+    <h2 id="title-net">Net sales</h2>
+    <p class="hint">Weekly net sales (pre-tax).</p>
     <div class="legend" id="legend-net"></div>
     <div class="chart" id="chart-net"></div>
   </section>
 
   <section class="card">
-    <h2>Labor cost % of sales</h2>
+    <h2 id="title-labor">Labor cost % of sales</h2>
     <p class="hint">Labor cost as a share of net sales — lower is more efficient.</p>
     <div class="legend" id="legend-labor"></div>
     <div class="chart" id="chart-labor"></div>
   </section>
 
   <section class="card">
-    <h2>Transactions by location</h2>
-    <p class="hint">Weekly order/ticket counts per location.</p>
+    <h2 id="title-txn">Transactions</h2>
+    <p class="hint">Weekly order/ticket counts.</p>
     <div class="legend" id="legend-txn"></div>
     <div class="chart" id="chart-txn"></div>
   </section>
@@ -424,15 +495,36 @@ function renderTable() {
   t.innerHTML = head + body;
 }
 
+function renderNav() {
+  const mount = document.getElementById("nav");
+  mount.innerHTML = DATA.nav.map(n =>
+    `<a href="${n.href}" class="${n.slug === DATA.activeSlug ? 'active' : ''}">${n.label}</a>`
+  ).join("");
+}
+
 function renderAll() {
   document.getElementById("title").textContent = DATA.title;
+  const byLoc = DATA.locations.length > 1;
   const wk = DATA.kpis && DATA.kpis.weekOf ? DATA.kpis.weekOf : (DATA.weeks[DATA.weeks.length-1] || "");
+  const scope = DATA.activeSlug === "index"
+    ? `${DATA.locations.length} location${DATA.locations.length===1?"":"s"}`
+    : DATA.scopeLabel;
   document.getElementById("subtitle").textContent =
-    `${DATA.locations.length} location${DATA.locations.length===1?"":"s"} · ${DATA.weeks.length} week${DATA.weeks.length===1?"":"s"} · latest week of ${wk}`;
+    `${scope} · ${DATA.weeks.length} week${DATA.weeks.length===1?"":"s"} · latest week of ${wk}`;
+
+  renderNav();
   renderKpis();
-  legend("legend-net", DATA.charts.netSales);
-  legend("legend-labor", DATA.charts.laborPct);
-  legend("legend-txn", DATA.charts.transactions);
+
+  // Chart headings: "… by location" only makes sense on the multi-location overview.
+  document.getElementById("title-net").textContent = byLoc ? "Net sales by location" : "Net sales";
+  document.getElementById("title-labor").textContent = "Labor cost % of sales";
+  document.getElementById("title-txn").textContent = byLoc ? "Transactions by location" : "Transactions";
+
+  // A legend only earns its space with 2+ series; a single line is named by the title.
+  legend("legend-net", byLoc ? DATA.charts.netSales : []);
+  legend("legend-labor", byLoc ? DATA.charts.laborPct : []);
+  legend("legend-txn", byLoc ? DATA.charts.transactions : []);
+
   lineChart("chart-net", DATA.charts.netSales, money);
   lineChart("chart-labor", DATA.charts.laborPct, pct);
   lineChart("chart-txn", DATA.charts.transactions, num);

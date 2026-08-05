@@ -120,12 +120,9 @@ class ToastClient:
         if not isinstance(raw, dict):
             return None
         general = raw.get("general") or {}
-        name = general.get("name")
-        location_name = general.get("locationName")
-        # Combine group + location when both exist and differ (e.g. "Fish Shop — Harbor").
-        if name and location_name and location_name != name:
-            return f"{name} — {location_name}"
-        return location_name or name or None
+        # Prefer the location-specific name (e.g. "Pacific Beach") over the group
+        # name (e.g. "Restaurant Caddies"), so labels/buttons stay short.
+        return general.get("locationName") or general.get("name") or None
 
     def get_time_entries(
         self, location: Location, start: datetime, end: datetime
