@@ -49,11 +49,17 @@ def load_config(config_path: str | os.PathLike[str] | None = "config.yaml") -> A
     """Load credentials from the environment and settings/locations from YAML."""
     load_dotenv()  # no-op if .env is absent
 
+    def _env(name: str, default: str = "") -> str:
+        # Strip whitespace: pasting into a secrets UI often adds a trailing
+        # newline/space, which silently breaks auth. Empty -> default.
+        value = (os.getenv(name) or "").strip()
+        return value or default
+
     credentials = ToastCredentials(
-        host=os.getenv("TOAST_API_HOST", "https://ws-api.toasttab.com").rstrip("/"),
-        client_id=os.getenv("TOAST_CLIENT_ID", ""),
-        client_secret=os.getenv("TOAST_CLIENT_SECRET", ""),
-        user_access_type=os.getenv("TOAST_USER_ACCESS_TYPE", "TOAST_MACHINE_CLIENT"),
+        host=_env("TOAST_API_HOST", "https://ws-api.toasttab.com").rstrip("/"),
+        client_id=_env("TOAST_CLIENT_ID"),
+        client_secret=_env("TOAST_CLIENT_SECRET"),
+        user_access_type=_env("TOAST_USER_ACCESS_TYPE", "TOAST_MACHINE_CLIENT"),
     )
 
     report = ReportSettings()

@@ -36,6 +36,17 @@ class ToastAuth:
             "userAccessType": self._creds.user_access_type,
         }
         resp = self._session.post(url, json=payload, timeout=30)
+        if resp.status_code == 401:
+            raise RuntimeError(
+                "Toast authentication failed (401 Unauthorized). Common causes:\n"
+                "  1. Environment mismatch: TOAST_API_HOST must match where your\n"
+                "     credentials live — production is https://ws-api.toasttab.com,\n"
+                "     sandbox is https://ws-sandbox-api.toasttab.com.\n"
+                "  2. Wrong or mistyped TOAST_CLIENT_ID / TOAST_CLIENT_SECRET.\n"
+                "  3. TOAST_USER_ACCESS_TYPE should be TOAST_MACHINE_CLIENT.\n"
+                f"     (host used: {self._creds.host}, "
+                f"userAccessType: {self._creds.user_access_type})"
+            )
         resp.raise_for_status()
         data = resp.json()
 
