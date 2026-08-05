@@ -1,0 +1,24 @@
+# Location config for this deployment.
+#
+# `guid` is the Toast restaurant external ID (an identifier, not a secret — it
+# already appears in the API request headers and build logs). `name` is the
+# display label used across the dashboard and Excel; it is authoritative and is
+# NOT overwritten by Toast's own restaurant name (which is the street address).
+locations:
+  - name: "Pacific Beach"        # 1775 Garnet Ave
+    guid: "84e6d721-e845-4e99-8a6a-fa350b98f722"
+    timezone: "America/Los_Angeles"
+  - name: "Encinitas"            # 1010 S Coast Hwy 101
+    guid: "3b392333-297b-4bbb-9b6e-f75e3bf646b1"
+    timezone: "America/Los_Angeles"
+  - name: "Point Loma"           # 1110 Rosecrans St Ste 100
+    guid: "f2a38d2f-d4b4-4cb9-94ba-3afcbb675298"
+    timezone: "America/Los_Angeles"
+  - name: "Oceanside"            # Fish Shop Oceanside
+    guid: "0b167cf2-bb37-403a-ba8c-e1df68e9542e"
+    timezone: "America/Los_Angeles"
+
+report:
+  week_start: "monday"
+  output_dir: "output"
+  title: "Weekly Labor & Sales Report"

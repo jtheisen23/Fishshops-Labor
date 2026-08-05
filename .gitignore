@@ -1,7 +1,8 @@
 # Secrets & local config
 .env
-config.yaml
 config.local.yaml
+# NOTE: config.yaml IS committed for this deployment (location names/GUIDs only,
+# no secrets). Use config.local.yaml for personal overrides.
 
 # Generated reports
 output/
