@@ -101,6 +101,8 @@ def _build_payload(
         "daily": daily_rows,
         # When the report was last built/synced (San Diego time).
         "syncedAt": kpi_ctx.get("synced_at", ""),
+        # Downloadable report links (Excel workbook covers all locations).
+        "downloads": kpi_ctx.get("downloads", {}),
     }
 
 
@@ -251,6 +253,7 @@ def render_dashboard(
     kpi_dates: dict | None = None,
     has_current: bool = False,
     synced_at: str = "",
+    downloads: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -265,6 +268,7 @@ def render_dashboard(
         "dates": kpi_dates or {},
         "has_current": has_current,
         "synced_at": synced_at,
+        "downloads": downloads or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -388,10 +392,15 @@ _HTML_TEMPLATE = r"""<!doctype html>
   header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
   h1 { font-size: 22px; margin: 0; }
   .sub { color: var(--ink-2); font-size: 13px; margin-top: 4px; }
-  button.theme {
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button.theme, .btn {
     background: var(--surface); color: var(--ink-2); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+    text-decoration: none; white-space: nowrap; line-height: 1.4;
   }
+  .btn:hover, button.theme:hover { border-color: var(--accent); color: var(--ink); }
+  #downloadExcel { color: #fff; background: var(--accent); border-color: transparent; }
+  #downloadExcel:hover { color: #fff; filter: brightness(1.05); }
   .nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 6px; }
   .nav a {
     text-decoration: none; font-size: 13px; padding: 7px 14px; border-radius: 999px;
@@ -436,6 +445,20 @@ _HTML_TEMPLATE = r"""<!doctype html>
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 28px; }
   @media (max-width: 560px) { .tile .value { font-size: 22px; } }
+  @media print {
+    /* Print/PDF: keep the brand palette, drop the chrome, and avoid splitting
+       a card across pages. */
+    :root { --page: #fff; --surface: #fff; --ink: #0b0b0b; --ink-2: #333; }
+    html, body { background: #fff; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .wrap { max-width: none; padding: 0 8px; }
+    .toolbar, .nav, #tooltip, button.theme { display: none !important; }
+    .card, section { break-inside: avoid; page-break-inside: avoid; }
+    .tablewrap { max-height: none; overflow: visible; }
+    thead th { position: static; }
+    .card, .tile { box-shadow: none; }
+    a[href]::after { content: ""; }
+  }
 </style>
 </head>
 <body>
@@ -446,7 +469,11 @@ _HTML_TEMPLATE = r"""<!doctype html>
       <h1 id="title"></h1>
       <div class="sub" id="subtitle"></div>
     </div>
-    <button class="theme" id="themeToggle" type="button">Toggle theme</button>
+    <div class="toolbar">
+      <a class="btn" id="downloadExcel" download hidden>⤓ Excel</a>
+      <button class="btn" id="printBtn" type="button">⎙ Print / PDF</button>
+      <button class="theme" id="themeToggle" type="button">Toggle theme</button>
+    </div>
   </header>
 
   <nav class="nav" id="nav" aria-label="Locations"></nav>
@@ -810,6 +837,22 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
   if (!document.documentElement.getAttribute("data-theme")) renderAll();
 });
 window.addEventListener("resize", () => { /* SVG is viewBox-scaled; nothing to do */ });
+
+// Downloads: link the full Excel workbook (all locations) and wire Print/PDF,
+// which captures whichever page you're on exactly as shown.
+(function initDownloads() {
+  const dl = DATA.downloads || {};
+  const a = document.getElementById("downloadExcel");
+  if (a && dl.excel) {
+    a.href = dl.excel;
+    if (dl.excelName) a.setAttribute("download", dl.excelName);
+    a.title = "Download the full Excel workbook — Summary + a tab per location";
+    a.hidden = false;
+  }
+  const pb = document.getElementById("printBtn");
+  if (pb) pb.addEventListener("click", () => window.print());
+})();
+
 renderAll();
 </script>
 </body>

@@ -236,12 +236,15 @@ def main(argv: list[str] | None = None) -> int:
     has_current = cur_hi >= cws
 
     stamp = end.isoformat()
-    xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report-{stamp}.xlsx", config.report.title)
+    # Stable filename so the dashboard can link to it; the download is offered
+    # to the browser under a dated name for the user's Downloads folder.
+    xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report.xlsx", config.report.title)
     html_path = render_dashboard(
         metrics, f"{output_dir}/index.html", config.report.title,
         current_daily=current_daily, labor_by_role=labor_by_role,
         kpi_by_loc=kpi_by_loc, kpi_dates=kpi_dates, has_current=has_current,
         synced_at=_synced_at_label(),
+        downloads={"excel": "weekly-report.xlsx", "excelName": f"weekly-report-{stamp}.xlsx"},
     )
 
     log.info("Wrote %s", xlsx_path)
