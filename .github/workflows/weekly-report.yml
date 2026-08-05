@@ -1,7 +1,8 @@
 name: Weekly Toast Report
 
 # Runs every Monday at 13:00 UTC (adjust to your timezone), on every push to the
-# default branch, and on demand.
+# default branch, and on demand. Deploys the dashboard to Cloudflare Pages, which
+# is protected by Cloudflare Access (email login).
 on:
   push:
     branches:
@@ -17,12 +18,11 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  # Only one deploy at a time; a newer run supersedes an older queued one.
+  group: "deploy-fishshops"
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -57,8 +57,7 @@ jobs:
           name: weekly-report-xlsx
           path: output/*.xlsx
 
-      # --- Private hosting: Cloudflare Pages (protected by Cloudflare Access) ---
-      # Runs only once CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets exist.
+      # Deploy to Cloudflare Pages (private — gated by Cloudflare Access).
       # Creates the Direct Upload project on first run, then deploys to it.
       - name: Deploy to Cloudflare Pages
         if: ${{ env.CF_API_TOKEN != '' }}
@@ -66,27 +65,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # Create the project if it doesn't exist yet (no-op if it already does).
           npx --yes wrangler@3 pages project create fishshops-labor \
             --production-branch=main || true
           npx --yes wrangler@3 pages deploy output \
             --project-name=fishshops-labor --branch=main --commit-dirty=true
-
-      # --- PUBLIC hosting: GitHub Pages. Disable this once Cloudflare Access is
-      #     confirmed working (Settings -> Pages -> Source: None), then remove
-      #     the upload step + deploy-pages job below. ---
-      - name: Upload Pages artifact (HTML dashboard)
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: output
-
-  deploy-pages:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
