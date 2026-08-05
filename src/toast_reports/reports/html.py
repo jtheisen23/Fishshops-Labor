@@ -9,11 +9,19 @@ full data table for accessibility.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
+import os
 import re
 from pathlib import Path
 
 from ..aggregate import WeeklyMetrics, group_by_week
+
+# Where to look for a brand logo to embed at the top of the dashboard. First hit
+# wins. Override with the DASHBOARD_LOGO env var. Embedded as a data URI so the
+# page stays fully self-contained (works on GitHub Pages, offline, etc.).
+_LOGO_CANDIDATES = ["assets/logo.png", "assets/logo.svg", "assets/logo.jpg", "assets/logo.webp"]
 
 # Validated categorical palette (dataviz reference instance): light + dark steps.
 _SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -154,6 +162,24 @@ def _slug(name: str) -> str:
     return s or "location"
 
 
+def _logo_data_uri() -> str:
+    """Return a data: URI for the brand logo, or "" if none is present."""
+    env = os.getenv("DASHBOARD_LOGO", "").strip()
+    for candidate in ([env] if env else []) + _LOGO_CANDIDATES:
+        p = Path(candidate)
+        if p.is_file():
+            mime = mimetypes.guess_type(str(p))[0] or "image/png"
+            data = base64.b64encode(p.read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{data}"
+    return ""
+
+
+def _logo_block(logo_uri: str) -> str:
+    if not logo_uri:
+        return ""
+    return f'<div class="brand"><img class="logo" src="{logo_uri}" alt="" /></div>'
+
+
 def _write_page(
     path: Path,
     metrics: list[WeeklyMetrics],
@@ -162,11 +188,14 @@ def _write_page(
     loc_index: dict[str, int],
     nav: list[dict],
     active_slug: str,
+    logo_uri: str,
 ) -> None:
     payload = _build_payload(metrics, title, scope_label, loc_index, nav, active_slug)
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
-    html = _HTML_TEMPLATE.replace("__TITLE__", _escape(page_title)).replace(
-        "__DATA__", json.dumps(payload)
+    html = (
+        _HTML_TEMPLATE.replace("__TITLE__", _escape(page_title))
+        .replace("__LOGO_BLOCK__", _logo_block(logo_uri))
+        .replace("__DATA__", json.dumps(payload))
     )
     path.write_text(html, encoding="utf-8")
 
@@ -195,13 +224,17 @@ def render_dashboard(metrics: list[WeeklyMetrics], out_path: str | Path, title: 
     nav = [{"label": "All Locations", "href": "index.html", "slug": "index"}]
     nav += [{"label": name, "href": f"{slugs[name]}.html", "slug": slugs[name]} for name in loc_names]
 
+    logo_uri = _logo_data_uri()
+
     # Overview (all locations).
-    _write_page(out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index")
+    _write_page(out_dir / "index.html", metrics, title, "All Locations", loc_index, nav, "index", logo_uri)
 
     # One page per location.
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
-        _write_page(out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav, slugs[name])
+        _write_page(
+            out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav, slugs[name], logo_uri
+        )
 
     return out_dir / "index.html"
 
@@ -250,6 +283,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
     line-height: 1.4;
   }
   .wrap { max-width: 1160px; margin: 0 auto; padding: 28px 20px 64px; }
+  .brand { text-align: center; margin: 0 0 20px; }
+  .brand .logo { height: 84px; width: auto; max-width: min(90%, 320px); object-fit: contain; }
   header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
   h1 { font-size: 22px; margin: 0; }
   .sub { color: var(--ink-2); font-size: 13px; margin-top: 4px; }
@@ -296,6 +331,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 <div class="wrap">
+  __LOGO_BLOCK__
   <header>
     <div>
       <h1 id="title"></h1>

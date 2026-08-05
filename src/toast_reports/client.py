@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -127,23 +127,34 @@ class ToastClient:
     def get_time_entries(
         self, location: Location, start: datetime, end: datetime
     ) -> list[TimeEntry]:
+        lo, hi = start.date(), end.date()
         raw = self._get(
             "/labor/v1/timeEntries",
             location.guid,
-            {"startDate": _iso_utc(start), "endDate": _iso_utc(end)},
+            # Pad the UTC query so no local-time business date at the edges is
+            # missed; then keep only entries whose business date is in-window.
+            {"startDate": _iso_utc(start - timedelta(days=1)),
+             "endDate": _iso_utc(end + timedelta(days=1))},
         )
         rows = raw if isinstance(raw, list) else []
-        return [_map_time_entry(r, location, end.date()) for r in rows]
+        entries = [_map_time_entry(r, location, hi) for r in rows]
+        return [e for e in entries if lo <= e.business_date <= hi]
 
     def get_orders(
         self, location: Location, start: datetime, end: datetime
     ) -> list[OrderRecord]:
+        lo, hi = start.date(), end.date()
         raw = self._get_paginated(
             "/orders/v2/ordersBulk",
             location.guid,
-            {"startDate": _iso_utc(start), "endDate": _iso_utc(end)},
+            # Pad the UTC query by a day on each side to capture orders whose
+            # local business date lands at the window edges (timezone offset),
+            # then filter strictly by business date so weeks stay whole.
+            {"startDate": _iso_utc(start - timedelta(days=1)),
+             "endDate": _iso_utc(end + timedelta(days=1))},
         )
-        return [_map_order(r, location, end.date()) for r in raw]
+        orders = [_map_order(r, location, hi) for r in raw]
+        return [o for o in orders if lo <= o.business_date <= hi]
 
 
 def _backoff_seconds(attempt: int, resp: requests.Response) -> float:

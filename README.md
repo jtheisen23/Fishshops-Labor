@@ -71,7 +71,16 @@ Excel.
      title: "Weekly Labor & Sales Report"
    ```
 
-   (Alternatively set `TOAST_RESTAURANT_GUIDS=guid1,guid2` in the environment.)
+   (Alternatively set `TOAST_RESTAURANT_GUIDS=guid1,guid2` in the environment.
+   Attach display names with a colon — `guid1:Pacific Beach,guid2:Encinitas` —
+   and that name wins over Toast's own restaurant name, which is often the
+   street address.)
+
+### Branding: add a logo
+
+Drop a logo file at **`assets/logo.png`** (also accepts `.svg`/`.jpg`/`.webp`, or
+point `DASHBOARD_LOGO` at another path). It's embedded as a data URI and shown
+centered at the top of every dashboard page. No file → no logo, no error.
 
 3. **Run.**
 

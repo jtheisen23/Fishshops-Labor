@@ -83,12 +83,19 @@ def load_config(config_path: str | os.PathLike[str] | None = "config.yaml") -> A
             title=str(r.get("title", report.title)),
         )
 
-    # Env-var location list overrides/augments if provided.
+    # Env-var location list overrides/augments if provided. Each comma-separated
+    # entry is a GUID, optionally followed by a friendly name after a colon:
+    #   TOAST_RESTAURANT_GUIDS="guid-a:Pacific Beach,guid-b:Encinitas"
+    # A name given here is authoritative (it won't be replaced by Toast's own
+    # restaurant name, which is often the street address).
     env_guids = os.getenv("TOAST_RESTAURANT_GUIDS", "").strip()
     if env_guids:
         known = {loc.guid for loc in locations}
-        for i, guid in enumerate(g.strip() for g in env_guids.split(",") if g.strip()):
-            if guid not in known:
-                locations.append(Location(guid=guid, name=f"Location {i + 1}"))
+        for i, entry in enumerate(e.strip() for e in env_guids.split(",") if e.strip()):
+            guid, _sep, raw_name = entry.partition(":")
+            guid, raw_name = guid.strip(), raw_name.strip()
+            if guid and guid not in known:
+                locations.append(Location(guid=guid, name=raw_name or f"Location {i + 1}"))
+                known.add(guid)
 
     return AppConfig(credentials=credentials, locations=locations, report=report)
