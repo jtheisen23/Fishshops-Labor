@@ -61,3 +61,32 @@ def test_time_entries_filtered_to_business_date_window():
 
     assert len(entries) == 1
     assert entries[0].business_date.isoformat() == "2026-07-06"
+
+
+def test_time_entries_chunks_long_window_under_30_days():
+    """A window wider than 30 days must be split into multiple requests, each
+    spanning <=30 days (Toast rejects larger labor ranges), with rows deduped."""
+    c = _client()
+    calls: list[dict] = []
+
+    def fake_get(path, guid, params=None):
+        if path.endswith("/jobs"):
+            return []
+        calls.append(params)
+        # Same entry (identical guid) can surface in adjacent chunks; must dedupe.
+        return [{"guid": "te1", "businessDate": "20260715", "regularHours": 8, "hourlyWage": 15}]
+
+    c._get = fake_get  # type: ignore[assignment]
+    # 40-day window -> at least two chunks after +/-1 day padding.
+    entries = c.get_time_entries(Location("g", "Test"), datetime(2026, 7, 1), datetime(2026, 8, 9, 23, 59, 59))
+
+    assert len(calls) >= 2  # window was chunked
+    for p in calls:
+        span = _iso_span_days(p["startDate"], p["endDate"])
+        assert span <= 30, f"chunk span {span}d exceeds Toast's 30-day cap"
+    assert len(entries) == 1  # duplicate guid across chunks collapsed to one
+
+
+def _iso_span_days(start_iso: str, end_iso: str) -> float:
+    fmt = "%Y-%m-%dT%H:%M:%S.000+0000"
+    return (datetime.strptime(end_iso, fmt) - datetime.strptime(start_iso, fmt)).total_seconds() / 86400

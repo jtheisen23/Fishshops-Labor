@@ -778,10 +778,13 @@ function renderAll() {
   renderLaborByRole();
   renderDaily();
 
-  // Chart headings: "… by location" only makes sense on the multi-location overview.
-  document.getElementById("title-net").textContent = byLoc ? "Net sales by location" : "Net sales";
-  document.getElementById("title-labor").textContent = "Labor cost % of sales";
-  document.getElementById("title-txn").textContent = byLoc ? "Transactions by location" : "Transactions";
+  // Chart headings: "… by location" only makes sense on the multi-location
+  // overview. All three trend charts are week-over-week series.
+  document.getElementById("title-net").textContent =
+    byLoc ? "Net sales week over week by location" : "Net sales week over week";
+  document.getElementById("title-labor").textContent = "Labor cost % of sales week over week";
+  document.getElementById("title-txn").textContent =
+    byLoc ? "Transactions week over week by location" : "Transactions week over week";
 
   // A legend only earns its space with 2+ series; a single line is named by the title.
   legend("legend-net", byLoc ? DATA.charts.netSales : []);

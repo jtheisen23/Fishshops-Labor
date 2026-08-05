@@ -28,6 +28,22 @@ log = logging.getLogger(__name__)
 _MAX_RETRIES = 5
 _ORDERS_PAGE_SIZE = 100
 
+# Toast's /labor/v1/timeEntries rejects date ranges greater than 30 days with a
+# 400. ordersBulk is more lenient, but we chunk both requests to the same safe
+# span so any reporting window (including larger --weeks) never trips the cap.
+_MAX_QUERY_RANGE_DAYS = 30
+
+
+def _date_chunks(start: datetime, end: datetime, max_days: int):
+    """Yield (chunk_start, chunk_end) datetime pairs that tile [start, end] with
+    each span at most ``max_days`` days, so per-request Toast range caps aren't hit."""
+    step = timedelta(days=max_days)
+    cur = start
+    while cur < end:
+        nxt = min(cur + step, end)
+        yield cur, nxt
+        cur = nxt
+
 
 def _iso_utc(dt: datetime) -> str:
     """Toast expects ISO-8601 with millis and a zone, e.g. 2026-08-01T00:00:00.000+0000."""
@@ -103,6 +119,39 @@ class ToastClient:
             page += 1
         return results
 
+    def _get_ranged(self, path: str, guid: str, q_start: datetime, q_end: datetime) -> list[dict]:
+        """Fetch a date-filtered endpoint across [q_start, q_end] in <=30-day
+        chunks (Toast's per-request range cap), concatenating and de-duplicating
+        rows by guid (chunks share a boundary instant)."""
+        return self._collect_chunks(
+            lambda cs, ce: self._get(path, guid, {"startDate": _iso_utc(cs), "endDate": _iso_utc(ce)}),
+            q_start, q_end,
+        )
+
+    def _get_paginated_ranged(
+        self, path: str, guid: str, q_start: datetime, q_end: datetime
+    ) -> list[dict]:
+        """Like _get_ranged but for paginated endpoints (orders)."""
+        return self._collect_chunks(
+            lambda cs, ce: self._get_paginated(path, guid, {"startDate": _iso_utc(cs), "endDate": _iso_utc(ce)}),
+            q_start, q_end,
+        )
+
+    @staticmethod
+    def _collect_chunks(fetch, q_start: datetime, q_end: datetime) -> list[dict]:
+        seen: set = set()
+        rows: list[dict] = []
+        for c_start, c_end in _date_chunks(q_start, q_end, _MAX_QUERY_RANGE_DAYS):
+            batch = fetch(c_start, c_end)
+            for r in (batch if isinstance(batch, list) else []):
+                key = r.get("guid")
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                rows.append(r)
+        return rows
+
     # -- Public data pulls -------------------------------------------------
 
     def get_restaurant_name(self, location: Location) -> str | None:
@@ -145,15 +194,13 @@ class ToastClient:
     ) -> list[TimeEntry]:
         lo, hi = start.date(), end.date()
         jobs = self.get_jobs(location)  # guid -> title
-        raw = self._get(
-            "/labor/v1/timeEntries",
-            location.guid,
-            # Pad the UTC query so no local-time business date at the edges is
-            # missed; then keep only entries whose business date is in-window.
-            {"startDate": _iso_utc(start - timedelta(days=1)),
-             "endDate": _iso_utc(end + timedelta(days=1))},
+        # Pad the UTC query so no local-time business date at the edges is missed,
+        # chunk to stay under Toast's 30-day cap, then keep only entries whose
+        # business date is in-window.
+        rows = self._get_ranged(
+            "/labor/v1/timeEntries", location.guid,
+            start - timedelta(days=1), end + timedelta(days=1),
         )
-        rows = raw if isinstance(raw, list) else []
         entries = [_map_time_entry(r, location, hi, jobs) for r in rows]
         return [e for e in entries if lo <= e.business_date <= hi]
 
@@ -161,14 +208,12 @@ class ToastClient:
         self, location: Location, start: datetime, end: datetime
     ) -> list[OrderRecord]:
         lo, hi = start.date(), end.date()
-        raw = self._get_paginated(
-            "/orders/v2/ordersBulk",
-            location.guid,
-            # Pad the UTC query by a day on each side to capture orders whose
-            # local business date lands at the window edges (timezone offset),
-            # then filter strictly by business date so weeks stay whole.
-            {"startDate": _iso_utc(start - timedelta(days=1)),
-             "endDate": _iso_utc(end + timedelta(days=1))},
+        # Pad the UTC query by a day on each side to capture orders whose local
+        # business date lands at the window edges (timezone offset), chunk to stay
+        # under Toast's range cap, then filter strictly by business date.
+        raw = self._get_paginated_ranged(
+            "/orders/v2/ordersBulk", location.guid,
+            start - timedelta(days=1), end + timedelta(days=1),
         )
         orders = [_map_order(r, location, hi) for r in raw]
         return [o for o in orders if lo <= o.business_date <= hi]
