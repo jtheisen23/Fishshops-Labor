@@ -1,7 +1,11 @@
 name: Weekly Toast Report
 
-# Runs every Monday at 13:00 UTC (adjust to your timezone), and on demand.
+# Runs every Monday at 13:00 UTC (adjust to your timezone), on every push to the
+# default branch, and on demand.
 on:
+  push:
+    branches:
+      - claude/toast-pos-weekly-reports-nft91i
   schedule:
     - cron: "0 13 * * 1"
   workflow_dispatch:
