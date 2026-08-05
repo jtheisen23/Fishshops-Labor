@@ -15,18 +15,26 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from datetime import date, datetime, time, timedelta
 
 from .aggregate import aggregate_weekly, week_start_of
 from .client import ToastClient
 from .config import AppConfig, load_config
-from .models import LocationDataset
+from .models import Location, LocationDataset
 from .reports.excel import render_workbook
 from .reports.html import render_dashboard
 from .sample_data import build_sample_datasets
 
 log = logging.getLogger("toast_reports")
+
+# Names auto-generated in config.py when only GUIDs are supplied, e.g. "Location 3".
+_PLACEHOLDER_NAME_RE = re.compile(r"^Location \d+$")
+
+
+def _is_placeholder_name(loc: Location) -> bool:
+    return loc.name == loc.guid or bool(_PLACEHOLDER_NAME_RE.match(loc.name))
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -82,6 +90,12 @@ def _pull_live(config: AppConfig, start: date, end: date) -> list[LocationDatase
 
     datasets: list[LocationDataset] = []
     for loc in config.locations:
+        # If the location only has an auto-generated placeholder name (e.g. from
+        # TOAST_RESTAURANT_GUIDS), ask Toast for the real restaurant name.
+        if _is_placeholder_name(loc):
+            real_name = client.get_restaurant_name(loc)
+            if real_name:
+                loc = Location(guid=loc.guid, name=real_name, timezone=loc.timezone)
         log.info("Pulling %s (%s)…", loc.name, loc.guid)
         ds = LocationDataset(location=loc)
         ds.orders = client.get_orders(loc, start_dt, end_dt)

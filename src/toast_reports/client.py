@@ -105,6 +105,28 @@ class ToastClient:
 
     # -- Public data pulls -------------------------------------------------
 
+    def get_restaurant_name(self, location: Location) -> str | None:
+        """Fetch the human-readable restaurant name from Toast's config.
+
+        Best-effort: a name is a nicety, not required for the numbers, so any
+        failure (missing scope, endpoint variation) just returns None and the
+        caller keeps whatever name it already had.
+        """
+        try:
+            raw = self._get(f"/restaurants/v1/restaurants/{location.guid}", location.guid)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully
+            log.warning("Could not fetch name for %s: %s", location.guid, exc)
+            return None
+        if not isinstance(raw, dict):
+            return None
+        general = raw.get("general") or {}
+        name = general.get("name")
+        location_name = general.get("locationName")
+        # Combine group + location when both exist and differ (e.g. "Fish Shop — Harbor").
+        if name and location_name and location_name != name:
+            return f"{name} — {location_name}"
+        return location_name or name or None
+
     def get_time_entries(
         self, location: Location, start: datetime, end: datetime
     ) -> list[TimeEntry]:
