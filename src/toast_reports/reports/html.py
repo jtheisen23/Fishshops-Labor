@@ -513,6 +513,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <ul class="obs" id="obs-list"></ul>
   </section>
 
+  <section class="card" id="daily-card" style="display:none">
+    <h2>Current week</h2>
+    <p class="hint" id="daily-hint">Net sales, labor hours, labor % of sales, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
+    <div class="tablewrap"><table id="dailyTable"></table></div>
+  </section>
+
   <section class="card" id="splh-card" style="display:none">
     <h2>Sales per labor hour by location</h2>
     <p class="hint">Weekly SPLH by location, with the multi-week average and first-to-last change.</p>
@@ -544,12 +550,6 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <p class="hint">Weekly order/ticket counts.</p>
     <div class="legend" id="legend-txn"></div>
     <div class="chart" id="chart-txn"></div>
-  </section>
-
-  <section class="card" id="daily-card" style="display:none">
-    <h2>Current week</h2>
-    <p class="hint" id="daily-hint">Net sales, labor hours, labor % of sales, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
-    <div class="tablewrap"><table id="dailyTable"></table></div>
   </section>
 
   <section class="card">
