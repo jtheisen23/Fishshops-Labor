@@ -348,6 +348,7 @@ def _daily_row(d) -> dict:
         "dow": _WEEKDAY[d.business_date.weekday()],
         "netSales": round(d.net_sales, 2),
         "laborHours": round(d.labor_hours, 2),
+        "laborPct": round(d.labor_pct, 4),
         "salesPerLaborHour": round(d.sales_per_labor_hour, 2),
     }
 
@@ -547,7 +548,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section class="card" id="daily-card" style="display:none">
     <h2>Current week</h2>
-    <p class="hint" id="daily-hint">Net sales, labor hours, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
+    <p class="hint" id="daily-hint">Net sales, labor hours, labor % of sales, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
     <div class="tablewrap"><table id="dailyTable"></table></div>
   </section>
 
@@ -799,10 +800,10 @@ function renderDaily() {
   if (!rows.length) { card.style.display = "none"; return; }
   card.style.display = "";
   const hm = h => Math.floor(h) + "h" + String(Math.round((h - Math.floor(h)) * 60)).padStart(2, "0") + "m";
-  const head = "<thead><tr><th>Day</th><th>Net sales</th><th>Hours</th><th>SPLH</th></tr></thead>";
+  const head = "<thead><tr><th>Day</th><th>Net sales</th><th>Hours</th><th>Labor %</th><th>SPLH</th></tr></thead>";
   const body = "<tbody>" + rows.map(r =>
     `<tr><td>${r.dow} ${fmtDay(r.day)}</td><td>${money2(r.netSales)}</td>` +
-    `<td>${hm(r.laborHours)}</td><td>${money2(r.salesPerLaborHour)}</td></tr>`
+    `<td>${hm(r.laborHours)}</td><td>${pct(r.laborPct)}</td><td>${money2(r.salesPerLaborHour)}</td></tr>`
   ).join("") + "</tbody>";
   document.getElementById("dailyTable").innerHTML = head + body;
 }
