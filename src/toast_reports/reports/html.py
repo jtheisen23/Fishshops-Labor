@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from ..aggregate import WeeklyMetrics, group_by_week
+from ..insights import build_observations
 
 # Where to look for a brand logo to embed at the top of the dashboard. First hit
 # wins. Override with the DASHBOARD_LOGO env var. Embedded as a data URI so the
@@ -56,6 +57,7 @@ def _build_payload(
     daily_rows: list[dict],
     labor_by_role: dict | None,
     kpi_ctx: dict,
+    observations: list[dict] | None,
 ) -> dict:
     weeks = group_by_week(metrics)
     week_labels = [w.week_start.isoformat() for w in weeks]
@@ -103,6 +105,8 @@ def _build_payload(
         "syncedAt": kpi_ctx.get("synced_at", ""),
         # Downloadable report links (Excel workbook covers all locations).
         "downloads": kpi_ctx.get("downloads", {}),
+        # Auto-generated, data-driven notes for this page.
+        "observations": observations or [],
     }
 
 
@@ -229,10 +233,11 @@ def _write_page(
     daily_rows: list[dict],
     labor_by_role: dict | None,
     kpi_ctx: dict,
+    observations: list[dict] | None,
 ) -> None:
     payload = _build_payload(
         metrics, title, scope_label, loc_index, nav, active_slug, daily_rows,
-        labor_by_role, kpi_ctx,
+        labor_by_role, kpi_ctx, observations,
     )
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
     html = (
@@ -295,11 +300,15 @@ def render_dashboard(
     logo_uri = _logo_data_uri()
     role_payload = _labor_by_role_payload(labor_by_role, loc_names)
 
+    # Data-driven observations: a company summary for the overview, one set per
+    # location for its page.
+    obs = build_observations(metrics, kpi_by_loc or {})
+
     # Overview (all locations) — daily board is location-specific (empty here);
     # the labor-by-role matrix is a cross-location board (overview only).
     _write_page(
         out_dir / "index.html", metrics, title, "All Locations", loc_index, nav,
-        "index", logo_uri, [], role_payload, kpi_ctx,
+        "index", logo_uri, [], role_payload, kpi_ctx, obs.get("__company__", []),
     )
 
     # One page per location, with its own current-week table and role matrix
@@ -309,7 +318,7 @@ def render_dashboard(
         _write_page(
             out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
             slugs[name], logo_uri, daily_by_loc.get(name, []),
-            _labor_by_role_payload(labor_by_role, [name]), kpi_ctx,
+            _labor_by_role_payload(labor_by_role, [name]), kpi_ctx, obs.get(name, []),
         )
 
     return out_dir / "index.html"
@@ -440,6 +449,15 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   #roleTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
+  ul.obs { list-style: none; margin: 6px 0 0; padding: 0; }
+  ul.obs li { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0;
+              border-bottom: 1px solid var(--grid); font-size: 13.5px; color: var(--ink); }
+  ul.obs li:last-child { border-bottom: none; }
+  ul.obs .obs-dot { flex: none; width: 8px; height: 8px; border-radius: 50%;
+                    margin-top: 6px; background: var(--muted); }
+  ul.obs li.good .obs-dot { background: var(--good); }
+  ul.obs li.bad .obs-dot { background: var(--bad); }
+  ul.obs li.neutral .obs-dot { background: var(--axis); }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -486,6 +504,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
   <section id="kpi-prior" aria-label="Prior week summary">
     <div class="kpi-head" id="kpi-prior-head"></div>
     <div class="kpis" id="kpis-prior"></div>
+  </section>
+
+  <section class="card" id="obs-card" style="display:none">
+    <h2 id="obs-title">Observations</h2>
+    <p class="hint">Auto-generated from this run's data.</p>
+    <ul class="obs" id="obs-list"></ul>
   </section>
 
   <section class="card" id="splh-card" style="display:none">
@@ -783,6 +807,20 @@ function renderDaily() {
   document.getElementById("dailyTable").innerHTML = head + body;
 }
 
+// Data-driven observations (company summary on the overview, per-location else).
+function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function renderObservations() {
+  const card = document.getElementById("obs-card");
+  const obs = DATA.observations || [];
+  if (!obs.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  document.getElementById("obs-title").textContent =
+    DATA.activeSlug === "index" ? "Company observations" : "Observations · " + DATA.scopeLabel;
+  document.getElementById("obs-list").innerHTML = obs.map(o =>
+    `<li class="${o.tone || 'neutral'}"><span class="obs-dot"></span><span>${esc(o.text)}</span></li>`
+  ).join("");
+}
+
 function renderNav() {
   const mount = document.getElementById("nav");
   mount.innerHTML = DATA.nav.map(n =>
@@ -801,6 +839,7 @@ function renderAll() {
 
   renderNav();
   renderKpis();
+  renderObservations();
   renderSplh();
   renderLaborByRole();
   renderDaily();
