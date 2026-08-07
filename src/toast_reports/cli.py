@@ -106,6 +106,20 @@ def _window_totals(ds: LocationDataset, lo: date, hi: date) -> dict:
     return {"netSales": net, "transactions": txns, "laborCost": cost, "laborHours": hours}
 
 
+_ROLE_ABBREV = {"general manager": "GM"}
+
+
+def _exclude_label(exclude_roles: list[str]) -> str:
+    """Short human label for the excluded roles, e.g. 'Register & GM', used in
+    the dashboard's 'excluded' notes so they stay accurate as the list changes."""
+    names = [_ROLE_ABBREV.get(r.strip().lower(), r.strip()) for r in exclude_roles if r.strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " & " + names[-1]
+
+
 def _apply_role_exclusions(datasets: list[LocationDataset], exclude_roles: list[str]) -> None:
     """Drop time entries whose job title is in the exclusion list (case-insensitive),
     so excluded roles (e.g. Register) count toward no labor figure anywhere."""
@@ -245,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         kpi_by_loc=kpi_by_loc, kpi_dates=kpi_dates, has_current=has_current,
         synced_at=_synced_at_label(),
         downloads={"excel": "weekly-report.xlsx", "excelName": f"weekly-report-{stamp}.xlsx"},
+        exclude_label=_exclude_label(config.report.exclude_roles),
     )
 
     log.info("Wrote %s", xlsx_path)

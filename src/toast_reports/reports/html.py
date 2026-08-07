@@ -107,6 +107,8 @@ def _build_payload(
         "downloads": kpi_ctx.get("downloads", {}),
         # Auto-generated, data-driven notes for this page.
         "observations": observations or [],
+        # Short label for roles excluded from all labor figures (e.g. Register & GM).
+        "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
 
 
@@ -259,6 +261,7 @@ def render_dashboard(
     has_current: bool = False,
     synced_at: str = "",
     downloads: dict | None = None,
+    exclude_label: str = "Register",
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -274,6 +277,7 @@ def render_dashboard(
         "has_current": has_current,
         "synced_at": synced_at,
         "downloads": downloads or {},
+        "exclude_label": exclude_label,
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -786,11 +790,12 @@ function renderLaborByRole() {
       return `<td>${hm(v)} <span class="muted">(${p}%)</span></td>`;
     }).join("") + "</tr>";
   });
-  body += `<tr class="total"><td><strong>Total (ex-Register)</strong></td>` +
+  const exLabel = DATA.excludeLabel || "Register";
+  body += `<tr class="total"><td><strong>Total (ex-${exLabel})</strong></td>` +
     d.locations.map(l => `<td><strong>${(d.totals[l] || 0).toFixed(1)}h</strong></td>`).join("") +
     "</tr></tbody>";
   document.getElementById("roleTable").innerHTML = head + body;
-  document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · Register excluded";
+  document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · " + exLabel + " excluded";
 }
 
 // Location only: current-week per-day Net sales / Hours / SPLH.
@@ -799,6 +804,9 @@ function renderDaily() {
   const rows = DATA.daily || [];
   if (!rows.length) { card.style.display = "none"; return; }
   card.style.display = "";
+  document.getElementById("daily-hint").textContent =
+    "Net sales, labor hours, labor % of sales, and sales per labor hour by day this week ("
+    + (DATA.excludeLabel || "Register") + " excluded). Updates daily.";
   const hm = h => Math.floor(h) + "h" + String(Math.round((h - Math.floor(h)) * 60)).padStart(2, "0") + "m";
   const head = "<thead><tr><th>Day</th><th>Net sales</th><th>Hours</th><th>Labor %</th><th>SPLH</th></tr></thead>";
   const body = "<tbody>" + rows.map(r =>

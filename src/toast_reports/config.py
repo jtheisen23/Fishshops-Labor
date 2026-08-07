@@ -46,7 +46,9 @@ class ReportSettings:
             "Kitchen": ["Kitchen"],
             "Staff": ["Staff"],
             "Shift Capt/Lead": ["Shift Capt", "Shift Lead"],
-            "GM/Chef": ["General Manager", "Chef"],
+            # General Manager is excluded from labor entirely (see exclude_roles),
+            # so this bucket is Chef only.
+            "Chef": ["Chef"],
         }
     )
 

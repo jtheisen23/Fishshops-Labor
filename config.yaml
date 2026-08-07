@@ -22,7 +22,10 @@ report:
   week_start: "monday"
   output_dir: "output"
   title: "Weekly Labor & Sales Report"
-  # Job titles (case-insensitive) excluded from ALL labor figures. "Register" is
-  # a POS role, not real labor, so it never counts toward hours / labor % / SPLH.
+  # Job titles (case-insensitive) excluded from ALL labor figures, so they never
+  # count toward hours / labor % / SPLH anywhere.
+  #   - "Register": a POS role, not real labor.
+  #   - "General Manager": salaried, excluded from hourly labor (Chef is kept).
   exclude_roles:
     - "Register"
+    - "General Manager"
