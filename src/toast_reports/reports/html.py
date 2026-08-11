@@ -117,6 +117,9 @@ def _build_payload(
         # Location-only: labor (kitchen staffing) impact on ticket times.
         "laborImpact": (kpi_ctx.get("labor_impact") or {}).get(present[0])
         if len(present) == 1 else None,
+        # Location-only: day x hour ticket-time heatmap.
+        "ticketHeatmap": (kpi_ctx.get("ticket_heatmap") or {}).get(present[0])
+        if len(present) == 1 else None,
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -276,6 +279,7 @@ def render_dashboard(
     ticket_times=None,
     ticket_trend: dict | None = None,
     labor_impact: dict | None = None,
+    ticket_heatmap: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -294,6 +298,7 @@ def render_dashboard(
         "exclude_label": exclude_label,
         "ticket_trend": ticket_trend or {},
         "labor_impact": labor_impact or {},
+        "ticket_heatmap": ticket_heatmap or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -535,6 +540,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
   ul.defs { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: var(--muted); }
   ul.defs li { margin: 2px 0; }
   ul.defs strong { color: var(--ink-2); font-weight: 600; }
+  #heatTable { border-collapse: separate; border-spacing: 3px; width: auto; min-width: 100%; }
+  #heatTable th, #heatTable td { border: none; text-align: center; padding: 6px 4px; font-size: 12px; }
+  #heatTable thead th { position: static; background: transparent; color: var(--muted); font-weight: 600; }
+  #heatTable th:first-child, #heatTable td:first-child { text-align: left; color: var(--ink-2); font-weight: 600; }
+  #heatTable td.cell { border-radius: 6px; color: #111; min-width: 34px; font-variant-numeric: tabular-nums; }
+  #heatTable td.empty { background: var(--grid); opacity: .35; }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -630,6 +641,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <h2>Dine-in ticket time trend <span class="muted" style="font-weight:400">(estimated)</span></h2>
     <p class="hint">Weekly median minutes from first item fired to last item ready, dine-in orders only (last 8 weeks).</p>
     <div class="chart" id="chart-dine-ticket"></div>
+  </section>
+
+  <section class="card" id="ticket-heatmap-card" style="display:none">
+    <h2>Ticket time by day &amp; hour <span class="muted" style="font-weight:400">(estimated)</span></h2>
+    <p class="hint">Median minutes from first item fired to last item ready, by weekday and hour (last 8 weeks). Redder = slower; blank = too few tickets.</p>
+    <div class="tablewrap"><table id="heatTable"></table></div>
+    <div class="legend" id="heat-legend" style="margin-top:10px"></div>
   </section>
 
   <section class="card" id="li-band-card" style="display:none">
@@ -982,6 +1000,38 @@ function renderDineTicket() {
   trendLine("chart-dine-ticket", d.weeks, d.values, palette()[0]);
 }
 
+// Location only: day x hour ticket-time heatmap.
+function renderTicketHeatmap() {
+  const card = document.getElementById("ticket-heatmap-card");
+  const d = DATA.ticketHeatmap;
+  if (!d || !d.hours || !d.hours.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const color = v => v == null ? "transparent"
+    : v <= 10 ? "#bfe3c6" : v <= 14 ? "#e9edb0" : v <= 18 ? "#f5d59b" : v <= 22 ? "#f2b48a" : "#eb9c9c";
+  const fmtH = h => { const ap = h < 12 ? "a" : "p"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; };
+  let head = "<thead><tr><th>Day</th>" + d.hours.map(h => `<th>${fmtH(h)}</th>`).join("") + "</tr></thead>";
+  let body = "<tbody>";
+  for (let wd = 0; wd < 7; wd++) {
+    body += `<tr><td>${days[wd]}</td>`;
+    for (const h of d.hours) {
+      const c = d.cells[wd + "-" + h];
+      if (c) {
+        const title = `${days[wd]} ${fmtH(h)} · median ${c.median}m · ${c.over}% over 20 min · ${c.n} tickets`;
+        body += `<td class="cell" style="background:${color(c.median)}" title="${title}">${Math.round(c.median)}</td>`;
+      } else {
+        body += `<td class="cell empty"></td>`;
+      }
+    }
+    body += "</tr>";
+  }
+  body += "</tbody>";
+  document.getElementById("heatTable").innerHTML = head + body;
+  document.getElementById("heat-legend").innerHTML =
+    [["≤10", "#bfe3c6"], ["11–14", "#e9edb0"], ["15–18", "#f5d59b"], ["19–22", "#f2b48a"], ["22+", "#eb9c9c"]]
+      .map(([lab, c]) => `<span><span class="swatch" style="background:${c}"></span>${lab} min</span>`).join("");
+}
+
 // Location only: labor (kitchen staffing) impact on ticket times — three views.
 function fmtHour(h) { const ap = h < 12 ? "a" : "p"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; }
 function polyline(svg, pts, color) {
@@ -1153,6 +1203,7 @@ function renderAll() {
   renderTicketTimes();
   renderTicketTrend();
   renderDineTicket();
+  renderTicketHeatmap();
   renderLaborImpact();
   renderDaily();
 

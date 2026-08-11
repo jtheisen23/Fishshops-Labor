@@ -122,6 +122,39 @@ def _for_location(ds: LocationDataset, titles: set[str]) -> dict | None:
     }
 
 
+def build_ticket_heatmap(datasets: list[LocationDataset], min_n: int = 3) -> dict | None:
+    """Per-location median ticket time by (weekday, hour) in local time, for a
+    day x hour heatmap. Cells below ``min_n`` tickets are omitted (too noisy).
+    Only locations with ready data appear."""
+    out: dict = {}
+    for ds in datasets:
+        if not any(o.ticket_ready_minutes is not None for o in ds.orders):
+            continue
+        tz = _tz(ds.location.timezone)
+        grid: dict = defaultdict(list)
+        for o in ds.orders:
+            if o.voided or o.ticket_ready_minutes is None:
+                continue
+            t = _to_local(o.opened_at, tz)
+            if not t:
+                continue
+            grid[(t.weekday(), t.hour)].append(o.ticket_ready_minutes)
+        cells: dict = {}
+        for (wd, h), v in grid.items():
+            if len(v) < min_n:
+                continue
+            cells[f"{wd}-{h}"] = {
+                "median": round(median(v), 1),
+                "n": len(v),
+                "over": round(100.0 * sum(1 for x in v if x > 20) / len(v)),
+            }
+        if not cells:
+            continue
+        hours = sorted({int(k.split("-")[1]) for k in cells})
+        out[ds.location.name] = {"hours": hours, "cells": cells}
+    return out or None
+
+
 def _bands(units: list[dict]) -> list[dict]:
     us = sorted(units, key=lambda u: u["load"])
     third = len(us) // 3
