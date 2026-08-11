@@ -112,8 +112,8 @@ def _build_payload(
         "ticketTimes": ticket_times,
         # Location-only: week-over-week ticket-time trend by channel.
         "ticketTrend": _ticket_trend_series(kpi_ctx.get("ticket_trend"), present, week_labels),
-        # Location-only: dine-in ticket time over the last 4 weeks.
-        "dineTicket4wk": _dinein_ticket_4wk(kpi_ctx.get("ticket_trend"), present, week_labels),
+        # Location-only: dine-in ticket-time trend over the last 8 weeks.
+        "dineTicketTrend": _dinein_ticket_trend(kpi_ctx.get("ticket_trend"), present, week_labels),
         # Location-only: labor (kitchen staffing) impact on ticket times.
         "laborImpact": (kpi_ctx.get("labor_impact") or {}).get(present[0])
         if len(present) == 1 else None,
@@ -382,8 +382,8 @@ def _ticket_trend_series(ticket_trend: dict | None, present: list[str], week_lab
     return {"series": series} if series else None
 
 
-def _dinein_ticket_4wk(ticket_trend: dict | None, present: list[str], week_labels: list[str]) -> dict | None:
-    """Weekly median dine-in ticket time for the last 4 weeks (single-location
+def _dinein_ticket_trend(ticket_trend: dict | None, present: list[str], week_labels: list[str]) -> dict | None:
+    """Weekly median dine-in ticket time for the last 8 weeks (single-location
     page only, where ready data exists)."""
     if not ticket_trend or len(present) != 1:
         return None
@@ -391,7 +391,7 @@ def _dinein_ticket_4wk(ticket_trend: dict | None, present: list[str], week_label
     if not by_bucket:
         return None
     wk = by_bucket.get("Dine-in") or {}
-    weeks = week_labels[-4:]
+    weeks = week_labels[-8:]
     values = [wk.get(w) for w in weeks]
     if not any(v is not None for v in values):
         return None
@@ -627,8 +627,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section class="card" id="dine-ticket-card" style="display:none">
-    <h2>Dine-in ticket time — last 4 weeks <span class="muted" style="font-weight:400">(estimated)</span></h2>
-    <p class="hint">Weekly median minutes from first item fired to last item ready, dine-in orders only.</p>
+    <h2>Dine-in ticket time trend <span class="muted" style="font-weight:400">(estimated)</span></h2>
+    <p class="hint">Weekly median minutes from first item fired to last item ready, dine-in orders only (last 8 weeks).</p>
     <div class="chart" id="chart-dine-ticket"></div>
   </section>
 
@@ -945,13 +945,14 @@ function renderTicketTrend() {
   lineChart("chart-ticket", t.series, v => (v == null ? "—" : v.toFixed(1) + " min"));
 }
 
-// Location only: dine-in ticket time over the last 4 weeks (single-series bars).
-function barChart(mountId, weeks, values, color) {
+// Location only: dine-in ticket-time trend (single-series line over weeks).
+function trendLine(mountId, weeks, values, color) {
   const mount = document.getElementById(mountId); mount.innerHTML = "";
   const W = 1120, H = 300, m = { top: 24, right: 20, bottom: 40, left: 56 };
   const pw = W - m.left - m.right, ph = H - m.top - m.bottom;
-  let ymax = 0; values.forEach(v => { if (v != null) ymax = Math.max(ymax, v); }); ymax = ymax * 1.15 || 1;
-  const n = weeks.length, band = pw / n, xc = i => m.left + band * (i + 0.5);
+  let ymax = 0; values.forEach(v => { if (v != null) ymax = Math.max(ymax, v); }); ymax = ymax * 1.2 || 1;
+  const n = weeks.length;
+  const x = i => m.left + (n <= 1 ? pw / 2 : pw * i / (n - 1));
   const y = v => m.top + ph - ph * v / ymax;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
   const ticks = 4;
@@ -960,23 +961,25 @@ function barChart(mountId, weeks, values, color) {
     svg.appendChild(el("line", { x1: m.left, y1: yy, x2: W - m.right, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
     const lb = el("text", { x: m.left - 8, y: yy + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }); lb.textContent = Math.round(v) + "m"; svg.appendChild(lb);
   }
+  weeks.forEach((w, i) => {
+    const lb = el("text", { x: x(i), y: H - 16, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 }); lb.textContent = w.slice(5); svg.appendChild(lb);
+  });
+  const pts = []; values.forEach((v, i) => { if (v != null) pts.push([x(i), y(v)]); });
+  polyline(svg, pts, color);
   values.forEach((v, i) => {
-    if (v != null) {
-      const bw = band * 0.5, bx = xc(i) - bw / 2, by = y(v);
-      svg.appendChild(el("rect", { x: bx, y: by, width: bw, height: m.top + ph - by, fill: color, rx: 3 }));
-      const vl = el("text", { x: xc(i), y: by - 6, "text-anchor": "middle", fill: "var(--ink-2)", "font-size": 11 }); vl.textContent = v.toFixed(1) + "m"; svg.appendChild(vl);
-    }
-    const lb = el("text", { x: xc(i), y: H - 16, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 }); lb.textContent = weeks[i].slice(5); svg.appendChild(lb);
+    if (v == null) return;
+    svg.appendChild(el("circle", { cx: x(i), cy: y(v), r: 3.4, fill: color, stroke: "var(--surface)", "stroke-width": 1.5 }));
+    const vl = el("text", { x: x(i), y: y(v) - 9, "text-anchor": "middle", fill: "var(--ink-2)", "font-size": 11 }); vl.textContent = v.toFixed(1); svg.appendChild(vl);
   });
   mount.appendChild(svg);
 }
 
 function renderDineTicket() {
   const card = document.getElementById("dine-ticket-card");
-  const d = DATA.dineTicket4wk;
+  const d = DATA.dineTicketTrend;
   if (!d || !d.values || !d.values.some(v => v != null)) { card.style.display = "none"; return; }
   card.style.display = "";
-  barChart("chart-dine-ticket", d.weeks, d.values, palette()[0]);
+  trendLine("chart-dine-ticket", d.weeks, d.values, palette()[0]);
 }
 
 // Location only: labor (kitchen staffing) impact on ticket times — three views.

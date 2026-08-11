@@ -16,7 +16,7 @@ on:
       weeks:
         description: "Number of trailing weeks to report"
         required: false
-        default: "4"
+        default: "8"
 
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
           TOAST_USER_ACCESS_TYPE: ${{ secrets.TOAST_USER_ACCESS_TYPE }}
           TOAST_RESTAURANT_GUIDS: ${{ secrets.TOAST_RESTAURANT_GUIDS }}
         run: |
-          python -m toast_reports --weeks "${{ github.event.inputs.weeks || '4' }}" --output-dir output
+          python -m toast_reports --weeks "${{ github.event.inputs.weeks || '8' }}" --output-dir output
 
       - name: Upload workbook artifact
         uses: actions/upload-artifact@v4
