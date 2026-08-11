@@ -41,14 +41,13 @@ class ReportSettings:
     exclude_roles: list[str] = field(default_factory=lambda: ["Register"])
     # Ordered role buckets for the "Labor hours by role" board: bucket -> the
     # Toast job titles that roll up into it. Titles not listed get their own row.
+    # General Manager and Chef are excluded from labor entirely (see
+    # exclude_roles), so they have no bucket here.
     role_groups: dict = field(
         default_factory=lambda: {
             "Kitchen": ["Kitchen"],
             "Staff": ["Staff"],
             "Shift Capt/Lead": ["Shift Capt", "Shift Lead"],
-            # General Manager is excluded from labor entirely (see exclude_roles),
-            # so this bucket is Chef only.
-            "Chef": ["Chef"],
         }
     )
 

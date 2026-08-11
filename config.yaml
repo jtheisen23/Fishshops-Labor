@@ -25,7 +25,9 @@ report:
   # Job titles (case-insensitive) excluded from ALL labor figures, so they never
   # count toward hours / labor % / SPLH anywhere.
   #   - "Register": a POS role, not real labor.
-  #   - "General Manager": salaried, excluded from hourly labor (Chef is kept).
+  #   - "General Manager": salaried, excluded from hourly labor.
+  #   - "Chef": excluded from hourly labor.
   exclude_roles:
     - "Register"
     - "General Manager"
+    - "Chef"
