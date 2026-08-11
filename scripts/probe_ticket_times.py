@@ -33,6 +33,23 @@ def _date_fields(d: dict) -> dict:
     return {k: v for k, v in d.items() if k.endswith("Date") and v}
 
 
+def _nested_date_paths(obj, prefix="", out=None):
+    """Recursively find every 'xxxDate' key anywhere in a nested dict/list,
+    returning dotted paths (e.g. 'fulfillment.readyDate'). This is how we learn
+    whether any kitchen fired/ready timestamp is hidden in a sub-object."""
+    if out is None:
+        out = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.endswith("Date") and v and str(v)[:4] != "1970":
+                out.add((prefix + k))
+            _nested_date_paths(v, prefix + k + ".", out)
+    elif isinstance(obj, list):
+        for it in obj[:3]:
+            _nested_date_paths(it, prefix, out)
+    return out
+
+
 def _parse(v):
     try:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
@@ -70,7 +87,9 @@ def main() -> int:
 
     order_date_keys: Counter = Counter()
     sel_date_keys: Counter = Counter()
+    nested_date_paths: Counter = Counter()
     sel_all_keys: Counter = Counter()
+    fulfillment_dump = 0
     sources: Counter = Counter()
     behaviors: Counter = Counter()
     statuses: Counter = Counter()
@@ -97,7 +116,12 @@ def main() -> int:
                     sel_all_keys[k] += 1
                 for k in _date_fields(sel):
                     sel_date_keys[k] += 1
+                for p in _nested_date_paths(sel):
+                    nested_date_paths[p] += 1
                 statuses[sel.get("fulfillmentStatus")] += 1
+                if fulfillment_dump < 6 and sel.get("fulfillment"):
+                    fulfillment_dump += 1
+                    log.info("  fulfillment obj: %s", sel.get("fulfillment"))
                 fired = sel.get("firedDate")
                 ready = sel.get("fulfilledDate") or sel.get("readyDate")
                 if fired:
@@ -127,6 +151,7 @@ def main() -> int:
     log.info("statuses:   %s", dict(statuses))
     log.info("order  *Date fields (count): %s", dict(order_date_keys))
     log.info("select *Date fields (count): %s", dict(sel_date_keys))
+    log.info("select NESTED *Date paths (count): %s", dict(nested_date_paths))
     log.info("select all keys: %s", sorted(sel_all_keys))
     log.info("---- fired->ready by bucket (BEHAVIOR/SOURCE) ----")
     for bucket, st in sorted(stat.items()):
