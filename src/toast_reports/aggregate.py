@@ -297,6 +297,34 @@ def ticket_times_last_week(
     return TicketTimes(week_start=latest, buckets=_TICKET_BUCKETS, stats=stats)
 
 
+def ticket_times_by_week(
+    datasets: list[LocationDataset], week_start: str
+) -> dict | None:
+    """Per-location weekly median ticket time (fired->ready) by channel, for the
+    week-over-week trend. Returns {location: {bucket: {week_iso: median}}} or
+    None if no location records ready events."""
+    per: dict[str, dict[str, dict[str, list[float]]]] = {}
+    for ds in datasets:
+        for o in ds.orders:
+            if o.ticket_ready_minutes is None or o.voided:
+                continue
+            bucket = ticket_bucket(o.source, o.dining_behavior)
+            if not bucket:
+                continue
+            wk = week_start_of(o.business_date, week_start).isoformat()
+            (per.setdefault(ds.location.name, {})
+                .setdefault(bucket, {})
+                .setdefault(wk, [])
+                .append(o.ticket_ready_minutes))
+    if not per:
+        return None
+    out: dict = {}
+    for name, buckets in per.items():
+        out[name] = {b: {wk: round(median(v), 1) for wk, v in weeks.items()}
+                     for b, weeks in buckets.items()}
+    return out
+
+
 def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
     """Aggregate raw orders + time entries into (location, business day) rows."""
     buckets: dict[tuple[str, date], DailyMetrics] = {}

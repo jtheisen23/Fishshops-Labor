@@ -110,6 +110,8 @@ def _build_payload(
         "observations": observations or [],
         # Location-only: kitchen ticket time (fired->ready) by channel.
         "ticketTimes": ticket_times,
+        # Location-only: week-over-week ticket-time trend by channel.
+        "ticketTrend": _ticket_trend_series(kpi_ctx.get("ticket_trend"), present, week_labels),
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -267,6 +269,7 @@ def render_dashboard(
     downloads: dict | None = None,
     exclude_label: str = "Register",
     ticket_times=None,
+    ticket_trend: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -283,6 +286,7 @@ def render_dashboard(
         "synced_at": synced_at,
         "downloads": downloads or {},
         "exclude_label": exclude_label,
+        "ticket_trend": ticket_trend or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -348,6 +352,27 @@ def _labor_by_role_payload(labor_by_role, loc_names: list[str]) -> dict | None:
         "cells": {loc: labor_by_role.hours.get(loc, {}) for loc in cols},
         "totals": {loc: round(sum(labor_by_role.hours.get(loc, {}).values()), 1) for loc in cols},
     }
+
+
+_TICKET_BUCKET_ORDER = ["Dine-in", "Online", "Takeout"]
+
+
+def _ticket_trend_series(ticket_trend: dict | None, present: list[str], week_labels: list[str]) -> dict | None:
+    """Build week-aligned median-minutes series per channel for a single-location
+    page. Returns None for the overview or where the location has no ready data."""
+    if not ticket_trend or len(present) != 1:
+        return None
+    loc = present[0]
+    by_bucket = ticket_trend.get(loc)
+    if not by_bucket:
+        return None
+    series = []
+    for i, bucket in enumerate(_TICKET_BUCKET_ORDER):
+        wk = by_bucket.get(bucket) or {}
+        values = [wk.get(w) for w in week_labels]
+        if any(v is not None for v in values):
+            series.append({"name": bucket, "slot": i, "values": values})
+    return {"series": series} if series else None
 
 
 def _ticket_payload(ticket_times, loc_name: str) -> dict | None:
@@ -560,6 +585,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <p class="hint" id="ticket-week"></p>
     <div class="tablewrap"><table id="ticketTable"></table></div>
     <p class="hint" id="ticket-note" style="margin-top:10px"></p>
+  </section>
+
+  <section class="card" id="ticket-trend-card" style="display:none">
+    <h2>Kitchen ticket time trend <span class="muted" style="font-weight:400">(estimated)</span></h2>
+    <p class="hint">Median minutes from first item fired to last item ready, by order type and week.</p>
+    <div class="legend" id="legend-ticket"></div>
+    <div class="chart" id="chart-ticket"></div>
   </section>
 
   <section class="card">
@@ -845,6 +877,16 @@ function renderTicketTimes() {
     "“ready” are included.</em>";
 }
 
+// Location only: week-over-week kitchen ticket-time trend by channel.
+function renderTicketTrend() {
+  const card = document.getElementById("ticket-trend-card");
+  const t = DATA.ticketTrend;
+  if (!t || !t.series || !t.series.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  legend("legend-ticket", t.series);
+  lineChart("chart-ticket", t.series, v => (v == null ? "—" : v.toFixed(1) + " min"));
+}
+
 // Location only: current-week per-day Net sales / Hours / SPLH.
 function renderDaily() {
   const card = document.getElementById("daily-card");
@@ -899,6 +941,7 @@ function renderAll() {
   renderSplh();
   renderLaborByRole();
   renderTicketTimes();
+  renderTicketTrend();
   renderDaily();
 
   // Chart headings: "… by location" only makes sense on the multi-location
