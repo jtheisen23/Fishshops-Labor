@@ -29,6 +29,7 @@ from .aggregate import (
 )
 from .client import ToastClient
 from .config import AppConfig, load_config
+from .labor_impact import build_labor_impact
 from .models import Location, LocationDataset
 from .reports.excel import render_workbook
 from .reports.html import render_dashboard
@@ -240,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     labor_by_role = labor_by_role_last_week(completed, ws, config.report.role_groups)
     ticket_times = ticket_times_last_week(completed, ws)
     ticket_trend = ticket_times_by_week(completed, ws)
+    labor_impact = build_labor_impact(completed, config.report.role_groups.get("Kitchen"))
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).
@@ -271,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         exclude_label=_exclude_label(config.report.exclude_roles),
         ticket_times=ticket_times,
         ticket_trend=ticket_trend,
+        labor_impact=labor_impact,
     )
 
     log.info("Wrote %s", xlsx_path)

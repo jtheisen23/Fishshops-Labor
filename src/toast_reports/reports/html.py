@@ -112,6 +112,9 @@ def _build_payload(
         "ticketTimes": ticket_times,
         # Location-only: week-over-week ticket-time trend by channel.
         "ticketTrend": _ticket_trend_series(kpi_ctx.get("ticket_trend"), present, week_labels),
+        # Location-only: labor (kitchen staffing) impact on ticket times.
+        "laborImpact": (kpi_ctx.get("labor_impact") or {}).get(present[0])
+        if len(present) == 1 else None,
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -270,6 +273,7 @@ def render_dashboard(
     exclude_label: str = "Register",
     ticket_times=None,
     ticket_trend: dict | None = None,
+    labor_impact: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -287,6 +291,7 @@ def render_dashboard(
         "downloads": downloads or {},
         "exclude_label": exclude_label,
         "ticket_trend": ticket_trend or {},
+        "labor_impact": labor_impact or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -496,6 +501,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #splhTable th:nth-child(2), #splhTable td:nth-child(2),
   #dailyTable th:nth-child(2), #dailyTable td:nth-child(2),
   #ticketTable th:nth-child(2), #ticketTable td:nth-child(2),
+  #liBandTable th:nth-child(2), #liBandTable td:nth-child(2),
   #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   #roleTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
@@ -600,6 +606,26 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <p class="hint">Median minutes from first item fired to last item ready, by order type and week.</p>
     <div class="legend" id="legend-ticket"></div>
     <div class="chart" id="chart-ticket"></div>
+  </section>
+
+  <section class="card" id="li-band-card" style="display:none">
+    <h2>Staffing vs. ticket time</h2>
+    <p class="hint">Business hours grouped by kitchen load (orders per kitchen labor hour). Fewer orders per cook-hour = better staffed.</p>
+    <div class="tablewrap"><table id="liBandTable"></table></div>
+    <p class="hint" id="li-band-headline" style="margin-top:10px"></p>
+  </section>
+
+  <section class="card" id="li-scatter-card" style="display:none">
+    <h2>Ticket time vs. kitchen load</h2>
+    <p class="hint" id="li-scatter-hint">Each point is one business hour. X = orders per kitchen labor hour, Y = median ticket time. The line is the trend.</p>
+    <div class="chart" id="li-scatter"></div>
+  </section>
+
+  <section class="card" id="li-hour-card" style="display:none">
+    <h2>By hour: demand, staffing &amp; ticket time</h2>
+    <p class="hint">Averages by hour of day. Bars = orders; lines = kitchen staff on the clock and median ticket time.</p>
+    <div class="legend" id="li-hour-legend"></div>
+    <div class="chart" id="li-hour"></div>
   </section>
 
   <section class="card">
@@ -895,6 +921,121 @@ function renderTicketTrend() {
   lineChart("chart-ticket", t.series, v => (v == null ? "—" : v.toFixed(1) + " min"));
 }
 
+// Location only: labor (kitchen staffing) impact on ticket times — three views.
+function fmtHour(h) { const ap = h < 12 ? "a" : "p"; let hh = h % 12; if (hh === 0) hh = 12; return hh + ap; }
+function polyline(svg, pts, color) {
+  if (!pts.length) return;
+  let d = ""; pts.forEach((p, i) => { d += (i ? " L" : "M") + p[0] + " " + p[1]; });
+  svg.appendChild(el("path", { d, fill: "none", stroke: color, "stroke-width": 2.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+}
+
+function scatterChart(mountId, points, trend) {
+  const mount = document.getElementById(mountId); mount.innerHTML = "";
+  const W = 1120, H = 340, m = { top: 16, right: 20, bottom: 46, left: 58 };
+  const pw = W - m.left - m.right, ph = H - m.top - m.bottom;
+  const colors = palette();
+  let xmax = 0, ymax = 0;
+  points.forEach(p => { xmax = Math.max(xmax, p.load); ymax = Math.max(ymax, p.median); });
+  if (trend) { xmax = Math.max(xmax, trend.x1); ymax = Math.max(ymax, trend.y0, trend.y1); }
+  xmax = xmax * 1.05 || 1; ymax = ymax * 1.12 || 1;
+  const x = v => m.left + pw * v / xmax, y = v => m.top + ph - ph * v / ymax;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+  const ticks = 4;
+  for (let t = 0; t <= ticks; t++) {
+    const v = ymax * t / ticks, yy = y(v);
+    svg.appendChild(el("line", { x1: m.left, y1: yy, x2: W - m.right, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lb = el("text", { x: m.left - 8, y: yy + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }); lb.textContent = Math.round(v) + "m"; svg.appendChild(lb);
+  }
+  for (let t = 0; t <= ticks; t++) {
+    const v = xmax * t / ticks, xx = x(v);
+    const lb = el("text", { x: xx, y: H - 18, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 }); lb.textContent = v.toFixed(1); svg.appendChild(lb);
+  }
+  const xt = el("text", { x: m.left + pw / 2, y: H - 3, "text-anchor": "middle", fill: "var(--ink-2)", "font-size": 11 }); xt.textContent = "orders per kitchen labor hour"; svg.appendChild(xt);
+  points.forEach(p => {
+    const c = el("circle", { cx: x(p.load), cy: y(p.median), r: 3.4, fill: colors[0], "fill-opacity": 0.5, stroke: "var(--surface)", "stroke-width": 0.5 });
+    c.addEventListener("mousemove", evt => showTip(`<div class="hd">${p.load.toFixed(1)} orders/cook-hr</div><div class="row"><span class="k">Median ticket</span><span class="v">${p.median} min</span></div><div class="row"><span class="k">Orders</span><span class="v">${p.orders}</span></div>`, evt.clientX, evt.clientY));
+    c.addEventListener("mouseleave", hideTip); svg.appendChild(c);
+  });
+  if (trend) svg.appendChild(el("line", { x1: x(trend.x0), y1: y(trend.y0), x2: x(trend.x1), y2: y(trend.y1), stroke: colors[1], "stroke-width": 2.5, "stroke-linecap": "round" }));
+  mount.appendChild(svg);
+}
+
+function hourCombo(mountId, rows) {
+  const mount = document.getElementById(mountId); mount.innerHTML = "";
+  const W = 1120, H = 340, m = { top: 16, right: 54, bottom: 40, left: 50 };
+  const pw = W - m.left - m.right, ph = H - m.top - m.bottom;
+  const colors = palette();
+  const cTicket = colors[0], cStaff = colors[3], cOrders = colors[2];
+  let maxMin = 0, maxCount = 0;
+  rows.forEach(r => { if (r.median != null) maxMin = Math.max(maxMin, r.median); maxCount = Math.max(maxCount, r.orders, r.kitchenStaff); });
+  maxMin = maxMin * 1.15 || 1; maxCount = maxCount * 1.15 || 1;
+  const band = pw / rows.length, xc = i => m.left + band * (i + 0.5);
+  const yL = v => m.top + ph - ph * v / maxMin, yR = v => m.top + ph - ph * v / maxCount;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+  const ticks = 4;
+  for (let t = 0; t <= ticks; t++) {
+    const v = maxMin * t / ticks, yy = yL(v);
+    svg.appendChild(el("line", { x1: m.left, y1: yy, x2: W - m.right, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lb = el("text", { x: m.left - 8, y: yy + 4, "text-anchor": "end", fill: "var(--muted)", "font-size": 11 }); lb.textContent = Math.round(v) + "m"; svg.appendChild(lb);
+    const rb = el("text", { x: W - m.right + 8, y: yR(maxCount * t / ticks) + 4, "text-anchor": "start", fill: "var(--muted)", "font-size": 11 }); rb.textContent = Math.round(maxCount * t / ticks); svg.appendChild(rb);
+  }
+  rows.forEach((r, i) => {
+    const bw = band * 0.6, bx = xc(i) - bw / 2, by = yR(r.orders);
+    svg.appendChild(el("rect", { x: bx, y: by, width: bw, height: m.top + ph - by, fill: cOrders, "fill-opacity": 0.28, rx: 2 }));
+    const lb = el("text", { x: xc(i), y: H - 14, "text-anchor": "middle", fill: "var(--muted)", "font-size": 11 }); lb.textContent = fmtHour(r.hour); svg.appendChild(lb);
+  });
+  polyline(svg, rows.map((r, i) => [xc(i), yR(r.kitchenStaff)]), cStaff);
+  const tpts = []; rows.forEach((r, i) => { if (r.median != null) tpts.push([xc(i), yL(r.median)]); });
+  polyline(svg, tpts, cTicket);
+  rows.forEach((r, i) => {
+    if (r.median != null) svg.appendChild(el("circle", { cx: xc(i), cy: yL(r.median), r: 3, fill: cTicket, stroke: "var(--surface)", "stroke-width": 1.2 }));
+    const hit = el("rect", { x: xc(i) - band / 2, y: m.top, width: band, height: ph, fill: "transparent" });
+    hit.addEventListener("mousemove", evt => showTip(`<div class="hd">${fmtHour(r.hour)}</div><div class="row"><span class="k">Orders</span><span class="v">${r.orders}</span></div><div class="row"><span class="k">Kitchen staff</span><span class="v">${r.kitchenStaff}</span></div><div class="row"><span class="k">Median ticket</span><span class="v">${r.median == null ? "—" : r.median + " min"}</span></div>`, evt.clientX, evt.clientY));
+    hit.addEventListener("mouseleave", hideTip); svg.appendChild(hit);
+  });
+  mount.appendChild(svg);
+  document.getElementById("li-hour-legend").innerHTML =
+    `<span><span class="swatch" style="background:${cOrders}"></span>Orders/hr</span>` +
+    `<span><span class="swatch" style="background:${cStaff}"></span>Kitchen staff</span>` +
+    `<span><span class="swatch" style="background:${cTicket}"></span>Median ticket</span>`;
+}
+
+function renderLaborImpact() {
+  const li = DATA.laborImpact;
+  const ids = ["li-band-card", "li-scatter-card", "li-hour-card"];
+  if (!li) { ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = "none"; }); return; }
+  const mins = v => (v == null ? "—" : v.toFixed(1) + " min");
+
+  const bc = document.getElementById("li-band-card");
+  if (li.bands && li.bands.length) {
+    bc.style.display = "";
+    const head = "<thead><tr><th>Staffing</th><th>Orders / cook-hr</th><th>Hours</th><th>Median</th><th>90th pct</th></tr></thead>";
+    const body = "<tbody>" + li.bands.map(b =>
+      `<tr><td>${b.label}</td><td>${b.loadLo}–${b.loadHi}</td><td>${num(b.hours)}</td><td><strong>${mins(b.median)}</strong></td><td>${mins(b.p90)}</td></tr>`
+    ).join("") + "</tbody>";
+    document.getElementById("liBandTable").innerHTML = head + body;
+    const well = li.bands.find(b => b.label === "Well-staffed"), und = li.bands.find(b => b.label === "Understaffed");
+    const hl = document.getElementById("li-band-headline");
+    if (well && und) {
+      const diff = und.median - well.median;
+      const p = well.median ? Math.round(diff / well.median * 100) : 0;
+      hl.innerHTML = `<em>When understaffed, tickets take <strong>${diff.toFixed(1)} min longer</strong> at the median (${mins(und.median)} vs ${mins(well.median)}${p ? `, +${p}%` : ""}).</em>`;
+    } else hl.textContent = "";
+  } else bc.style.display = "none";
+
+  const sc = document.getElementById("li-scatter-card");
+  if (li.scatter && li.scatter.length) {
+    sc.style.display = "";
+    scatterChart("li-scatter", li.scatter, li.trend);
+    if (li.trend) document.getElementById("li-scatter-hint").innerHTML =
+      `Each point is one business hour. X = orders per kitchen labor hour, Y = median ticket time. Trend line (correlation r = ${li.trend.r}).`;
+  } else sc.style.display = "none";
+
+  const hc = document.getElementById("li-hour-card");
+  if (li.hourly && li.hourly.length) { hc.style.display = ""; hourCombo("li-hour", li.hourly); }
+  else hc.style.display = "none";
+}
+
 // Location only: current-week per-day Net sales / Hours / SPLH.
 function renderDaily() {
   const card = document.getElementById("daily-card");
@@ -950,6 +1091,7 @@ function renderAll() {
   renderLaborByRole();
   renderTicketTimes();
   renderTicketTrend();
+  renderLaborImpact();
   renderDaily();
 
   // Chart headings: "… by location" only makes sense on the multi-location
