@@ -204,10 +204,30 @@ class ToastClient:
         entries = [_map_time_entry(r, location, hi, jobs) for r in rows]
         return [e for e in entries if lo <= e.business_date <= hi]
 
+    def get_dining_options(self, location: Location) -> dict[str, str]:
+        """Map dining-option GUID -> behavior (DINE_IN / TAKE_OUT / DELIVERY).
+        Best-effort: on failure returns {} and orders get an empty behavior."""
+        for path in ("/config/v2/diningOptions", "/config/v1/diningOptions"):
+            try:
+                raw = self._get(path, location.guid)
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                log.warning("Could not fetch dining options (%s) for %s: %s",
+                            path, location.guid, exc)
+                continue
+            out: dict[str, str] = {}
+            for o in raw if isinstance(raw, list) else []:
+                guid, behavior = o.get("guid"), o.get("behavior")
+                if guid and behavior:
+                    out[guid] = behavior
+            if out:
+                return out
+        return {}
+
     def get_orders(
         self, location: Location, start: datetime, end: datetime
     ) -> list[OrderRecord]:
         lo, hi = start.date(), end.date()
+        dining = self.get_dining_options(location)  # guid -> behavior
         # Pad the UTC query by a day on each side to capture orders whose local
         # business date lands at the window edges (timezone offset), chunk to stay
         # under Toast's range cap, then filter strictly by business date.
@@ -215,7 +235,7 @@ class ToastClient:
             "/orders/v2/ordersBulk", location.guid,
             start - timedelta(days=1), end + timedelta(days=1),
         )
-        orders = [_map_order(r, location, hi) for r in raw]
+        orders = [_map_order(r, location, hi, dining) for r in raw]
         return [o for o in orders if lo <= o.business_date <= hi]
 
 
@@ -255,7 +275,9 @@ def _map_time_entry(
     )
 
 
-def _map_order(row: dict, location: Location, fallback_date: date) -> OrderRecord:
+def _map_order(
+    row: dict, location: Location, fallback_date: date, dining: dict[str, str] | None = None
+) -> OrderRecord:
     checks = row.get("checks") or []
     net_sales = 0.0
     tax = 0.0
@@ -269,6 +291,7 @@ def _map_order(row: dict, location: Location, fallback_date: date) -> OrderRecor
         for payment in check.get("payments") or []:
             tips += float(payment.get("tipAmount") or 0.0)
 
+    behavior = (dining or {}).get((row.get("diningOption") or {}).get("guid"), "")
     return OrderRecord(
         location_guid=location.guid,
         business_date=_parse_business_date(row.get("businessDate"), fallback_date),
@@ -280,4 +303,34 @@ def _map_order(row: dict, location: Location, fallback_date: date) -> OrderRecor
         tax=tax,
         tips=tips,
         voided=bool(row.get("voided") or False),
+        source=str(row.get("source") or ""),
+        dining_behavior=str(behavior or ""),
+        ticket_ready_minutes=_ticket_ready_minutes(checks),
     )
+
+
+def _ticket_ready_minutes(checks: list) -> float | None:
+    """Whole-ticket kitchen time: earliest item fired (createdDate) -> latest
+    item marked READY (its modifiedDate is the KDS bump). Returns None when no
+    item on the ticket was bumped to READY, or the span is implausible.
+
+    Toast exposes no dedicated ready timestamp, so for a READY item its
+    modifiedDate is the bump time. Only locations whose kitchen bumps tickets
+    on the KDS produce READY items (Oceanside today)."""
+    fired: datetime | None = None
+    ready: datetime | None = None
+    for check in checks:
+        for sel in check.get("selections") or []:
+            if sel.get("voided"):
+                continue
+            created = _parse_dt(sel.get("createdDate"))
+            if created and (fired is None or created < fired):
+                fired = created
+            if sel.get("fulfillmentStatus") == "READY":
+                modified = _parse_dt(sel.get("modifiedDate"))
+                if modified and (ready is None or modified > ready):
+                    ready = modified
+    if not fired or not ready:
+        return None
+    mins = (ready - fired).total_seconds() / 60.0
+    return round(mins, 2) if 0 <= mins < 240 else None

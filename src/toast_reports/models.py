@@ -65,6 +65,12 @@ class OrderRecord:
     tax: float
     tips: float
     voided: bool = False
+    # Order channel/type, used for the kitchen ticket-time board.
+    source: str = ""              # e.g. "In Store", "Online", "API"
+    dining_behavior: str = ""     # DINE_IN / TAKE_OUT / DELIVERY
+    # Whole-ticket kitchen time in minutes: first item fired -> last item marked
+    # READY on the KDS. None when the kitchen didn't bump this ticket.
+    ticket_ready_minutes: float | None = None
 
     @property
     def gross_sales(self) -> float:

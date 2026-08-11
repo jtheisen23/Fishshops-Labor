@@ -19,7 +19,13 @@ import re
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 
-from .aggregate import aggregate_daily, aggregate_weekly, labor_by_role_last_week, week_start_of
+from .aggregate import (
+    aggregate_daily,
+    aggregate_weekly,
+    labor_by_role_last_week,
+    ticket_times_last_week,
+    week_start_of,
+)
 from .client import ToastClient
 from .config import AppConfig, load_config
 from .models import Location, LocationDataset
@@ -231,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     current_daily = aggregate_daily(current)
     labor_by_role = labor_by_role_last_week(completed, ws, config.report.role_groups)
+    ticket_times = ticket_times_last_week(completed, ws)
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).
@@ -260,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         synced_at=_synced_at_label(),
         downloads={"excel": "weekly-report.xlsx", "excelName": f"weekly-report-{stamp}.xlsx"},
         exclude_label=_exclude_label(config.report.exclude_roles),
+        ticket_times=ticket_times,
     )
 
     log.info("Wrote %s", xlsx_path)

@@ -58,6 +58,7 @@ def _build_payload(
     labor_by_role: dict | None,
     kpi_ctx: dict,
     observations: list[dict] | None,
+    ticket_times: dict | None,
 ) -> dict:
     weeks = group_by_week(metrics)
     week_labels = [w.week_start.isoformat() for w in weeks]
@@ -107,6 +108,8 @@ def _build_payload(
         "downloads": kpi_ctx.get("downloads", {}),
         # Auto-generated, data-driven notes for this page.
         "observations": observations or [],
+        # Location-only: kitchen ticket time (fired->ready) by channel.
+        "ticketTimes": ticket_times,
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -236,10 +239,11 @@ def _write_page(
     labor_by_role: dict | None,
     kpi_ctx: dict,
     observations: list[dict] | None,
+    ticket_times: dict | None,
 ) -> None:
     payload = _build_payload(
         metrics, title, scope_label, loc_index, nav, active_slug, daily_rows,
-        labor_by_role, kpi_ctx, observations,
+        labor_by_role, kpi_ctx, observations, ticket_times,
     )
     page_title = title if active_slug == "index" else f"{title} — {scope_label}"
     html = (
@@ -262,6 +266,7 @@ def render_dashboard(
     synced_at: str = "",
     downloads: dict | None = None,
     exclude_label: str = "Register",
+    ticket_times=None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -309,20 +314,22 @@ def render_dashboard(
     obs = build_observations(metrics, kpi_by_loc or {})
 
     # Overview (all locations) — daily board is location-specific (empty here);
-    # the labor-by-role matrix is a cross-location board (overview only).
+    # the labor-by-role matrix is a cross-location board (overview only). The
+    # ticket-time board is location-specific too (empty here).
     _write_page(
         out_dir / "index.html", metrics, title, "All Locations", loc_index, nav,
-        "index", logo_uri, [], role_payload, kpi_ctx, obs.get("__company__", []),
+        "index", logo_uri, [], role_payload, kpi_ctx, obs.get("__company__", []), None,
     )
 
-    # One page per location, with its own current-week table and role matrix
-    # (that single location as the only column).
+    # One page per location, with its own current-week table, role matrix (that
+    # single location), and kitchen ticket-time board (only where data exists).
     for name in loc_names:
         loc_metrics = [m for m in metrics if m.location_name == name]
         _write_page(
             out_dir / f"{slugs[name]}.html", loc_metrics, title, name, loc_index, nav,
             slugs[name], logo_uri, daily_by_loc.get(name, []),
             _labor_by_role_payload(labor_by_role, [name]), kpi_ctx, obs.get(name, []),
+            _ticket_payload(ticket_times, name),
         )
 
     return out_dir / "index.html"
@@ -341,6 +348,18 @@ def _labor_by_role_payload(labor_by_role, loc_names: list[str]) -> dict | None:
         "cells": {loc: labor_by_role.hours.get(loc, {}) for loc in cols},
         "totals": {loc: round(sum(labor_by_role.hours.get(loc, {}).values()), 1) for loc in cols},
     }
+
+
+def _ticket_payload(ticket_times, loc_name: str) -> dict | None:
+    """Shape the TicketTimes aggregate for one location, or None if that location
+    has no kitchen ticket timing (its kitchen doesn't bump the KDS)."""
+    if not ticket_times or loc_name not in ticket_times.stats:
+        return None
+    loc_stats = ticket_times.stats[loc_name]
+    rows = [{"bucket": b, **loc_stats[b]} for b in ticket_times.buckets if b in loc_stats]
+    if not rows:
+        return None
+    return {"weekOf": ticket_times.week_start.isoformat(), "rows": rows}
 
 
 _WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -451,6 +470,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   /* Matrix/daily tables: only the first column is a label; the rest are numbers. */
   #splhTable th:nth-child(2), #splhTable td:nth-child(2),
   #dailyTable th:nth-child(2), #dailyTable td:nth-child(2),
+  #ticketTable th:nth-child(2), #ticketTable td:nth-child(2),
   #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   #roleTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
@@ -533,6 +553,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <h2>Labor hours by role</h2>
     <p class="hint" id="role-week"></p>
     <div class="tablewrap"><table id="roleTable"></table></div>
+  </section>
+
+  <section class="card" id="ticket-card" style="display:none">
+    <h2>Kitchen ticket time <span class="muted" style="font-weight:400">(estimated)</span></h2>
+    <p class="hint" id="ticket-week"></p>
+    <div class="tablewrap"><table id="ticketTable"></table></div>
+    <p class="hint" id="ticket-note" style="margin-top:10px"></p>
   </section>
 
   <section class="card">
@@ -798,6 +825,26 @@ function renderLaborByRole() {
   document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · " + exLabel + " excluded";
 }
 
+// Location only: kitchen ticket time (fired -> ready) by channel.
+function renderTicketTimes() {
+  const card = document.getElementById("ticket-card");
+  const d = DATA.ticketTimes;
+  if (!d || !d.rows || !d.rows.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const mins = v => (v == null ? "—" : v.toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1}) + " min");
+  const head = "<thead><tr><th>Order type</th><th>Tickets</th><th>Median</th><th>Avg</th><th>90th pct</th></tr></thead>";
+  const body = "<tbody>" + d.rows.map(r =>
+    `<tr><td>${r.bucket}</td><td>${num(r.n)}</td><td><strong>${mins(r.median)}</strong></td>` +
+    `<td>${mins(r.mean)}</td><td>${mins(r.p90)}</td></tr>`
+  ).join("") + "</tbody>";
+  document.getElementById("ticketTable").innerHTML = head + body;
+  document.getElementById("ticket-week").textContent =
+    "Week of " + d.weekOf + " · time from first item fired to last item ready on the KDS";
+  document.getElementById("ticket-note").innerHTML =
+    "<em>Estimated from item-level timestamps; only tickets the kitchen bumped to " +
+    "“ready” are included.</em>";
+}
+
 // Location only: current-week per-day Net sales / Hours / SPLH.
 function renderDaily() {
   const card = document.getElementById("daily-card");
@@ -851,6 +898,7 @@ function renderAll() {
   renderObservations();
   renderSplh();
   renderLaborByRole();
+  renderTicketTimes();
   renderDaily();
 
   // Chart headings: "… by location" only makes sense on the multi-location

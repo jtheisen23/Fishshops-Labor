@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from statistics import mean, median
 
 from .models import LocationDataset, OrderRecord, TimeEntry
 
@@ -223,6 +224,77 @@ def labor_by_role_last_week(
 
     role_order = list(role_groups.keys()) + sorted(extra)
     return LaborByRole(week_start=latest, role_order=role_order, hours=hours)
+
+
+# Order channel buckets for the kitchen ticket-time board, matching how an
+# operator thinks about the business: dine-in, digital/online, and counter to-go.
+_TICKET_BUCKETS = ["Dine-in", "Online", "Takeout"]
+_ONLINE_SOURCES = {"online", "api", "toast local"}
+
+
+def ticket_bucket(source: str, behavior: str) -> str | None:
+    """Classify an order into Dine-in / Online / Takeout (or None to skip).
+    Digital channels (online ordering, delivery apps) are 'Online'; in-house
+    dine-in is 'Dine-in'; everything else to-go is 'Takeout'."""
+    s = (source or "").strip().lower()
+    b = (behavior or "").strip().upper()
+    if s in _ONLINE_SOURCES:
+        return "Online"
+    if b == "DINE_IN":
+        return "Dine-in"
+    if b in {"TAKE_OUT", "DELIVERY"}:
+        return "Takeout"
+    return None
+
+
+@dataclass
+class TicketTimes:
+    """Whole-ticket kitchen times (fired -> last item ready) for the latest week,
+    per location, bucketed by order channel. Only locations whose kitchen bumps
+    tickets on the KDS appear here."""
+
+    week_start: date
+    buckets: list[str]
+    # stats[location_name][bucket] = {"n", "median", "mean", "p90"}
+    stats: dict = field(default_factory=dict)
+
+
+def ticket_times_last_week(
+    datasets: list[LocationDataset], week_start: str
+) -> TicketTimes | None:
+    """Aggregate order-level fired->ready times for the most recent week that has
+    any ticket timing, bucketed by channel. Returns None if no location records
+    ready events."""
+    timed = [(ds, o) for ds in datasets for o in ds.orders
+             if o.ticket_ready_minutes is not None and not o.voided]
+    if not timed:
+        return None
+    latest = max(week_start_of(o.business_date, week_start) for _, o in timed)
+
+    per: dict[str, dict[str, list[float]]] = {}
+    for ds, o in timed:
+        if week_start_of(o.business_date, week_start) != latest:
+            continue
+        bucket = ticket_bucket(o.source, o.dining_behavior)
+        if not bucket:
+            continue
+        per.setdefault(ds.location.name, {}).setdefault(bucket, []).append(o.ticket_ready_minutes)
+    if not per:
+        return None
+
+    stats: dict = {}
+    for name, buckets in per.items():
+        stats[name] = {}
+        for b, vals in buckets.items():
+            vs = sorted(vals)
+            p90 = vs[min(len(vs) - 1, int(len(vs) * 0.9))]
+            stats[name][b] = {
+                "n": len(vs),
+                "median": round(median(vs), 1),
+                "mean": round(mean(vs), 1),
+                "p90": round(p90, 1),
+            }
+    return TicketTimes(week_start=latest, buckets=_TICKET_BUCKETS, stats=stats)
 
 
 def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
