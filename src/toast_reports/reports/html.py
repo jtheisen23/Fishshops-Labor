@@ -508,6 +508,9 @@ _HTML_TEMPLATE = r"""<!doctype html>
   ul.obs li.good .obs-dot { background: var(--good); }
   ul.obs li.bad .obs-dot { background: var(--bad); }
   ul.obs li.neutral .obs-dot { background: var(--axis); }
+  ul.defs { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: var(--muted); }
+  ul.defs li { margin: 2px 0; }
+  ul.defs strong { color: var(--ink-2); font-weight: 600; }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -585,6 +588,11 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <p class="hint" id="ticket-week"></p>
     <div class="tablewrap"><table id="ticketTable"></table></div>
     <p class="hint" id="ticket-note" style="margin-top:10px"></p>
+    <ul class="defs">
+      <li><strong>Median</strong> — the typical ticket; half were faster, half slower.</li>
+      <li><strong>Avg</strong> — the mean; a few slow tickets pull it up.</li>
+      <li><strong>90th pct</strong> — 9 of 10 tickets were ready within this time; the slowest 10% took longer.</li>
+    </ul>
   </section>
 
   <section class="card" id="ticket-trend-card" style="display:none">
