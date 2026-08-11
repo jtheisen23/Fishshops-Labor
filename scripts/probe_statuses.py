@@ -55,16 +55,16 @@ def main() -> int:
     end = datetime.combine(date.today(), time.max)
     start = datetime.combine(date.today() - timedelta(days=_DAYS_BACK), time.min)
 
-    # Dining-option guid -> behavior (DINE_IN / TAKE_OUT / DELIVERY).
-    do_map: dict[str, str] = {}
-    try:
-        raw = client._get("/config/v2/diningOptions", cfg.locations[0].guid)
-        for o in raw if isinstance(raw, list) else []:
-            do_map[o.get("guid")] = o.get("behavior")
-    except Exception as e:  # noqa: BLE001
-        log.info("diningOptions config unavailable: %s", e)
-
     for loc in cfg.locations:
+        # Dining-option guid -> behavior, fetched PER LOCATION (guids differ).
+        do_map: dict[str, str] = {}
+        try:
+            raw = client._get("/config/v2/diningOptions", loc.guid)
+            for o in raw if isinstance(raw, list) else []:
+                do_map[o.get("guid")] = o.get("behavior")
+        except Exception as e:  # noqa: BLE001
+            log.info("diningOptions config unavailable for %s: %s", loc.name, e)
+
         orders = client._get_paginated_ranged("/orders/v2/ordersBulk", loc.guid, start, end)
         statuses: Counter = Counter()
         sel_total = 0
