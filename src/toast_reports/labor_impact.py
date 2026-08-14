@@ -122,18 +122,11 @@ def _for_location(ds: LocationDataset, titles: set[str]) -> dict | None:
     }
 
 
-_WD_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
-def _fmt_hour(h: int) -> str:
-    ap = "AM" if h < 12 else "PM"
-    return f"{h % 12 or 12} {ap}"
-
-
-def build_quiet_hours(datasets: list[LocationDataset], min_open_share: float = 0.5) -> dict | None:
-    """For each location and weekday, find the slowest hour — the operating hour
-    with the fewest orders — and its average order count, over the window (local
-    time). Returns {location: [{day, hour, avg}, ... Mon..Sun]}."""
+def build_orders_heatmap(datasets: list[LocationDataset], min_open_share: float = 0.4) -> dict | None:
+    """Average orders per (weekday, hour) in local time over the window, for a
+    day x hour order-volume heatmap. Only operating hours (orders on >= a share
+    of that weekday's dates) are kept, so closed hours don't clutter the grid.
+    Returns {location: {hours: [...], cells: {"wd-hour": avg}}}."""
     out: dict = {}
     for ds in datasets:
         tz = _tz(ds.location.timezone)
@@ -150,31 +143,22 @@ def build_quiet_hours(datasets: list[LocationDataset], min_open_share: float = 0
         if not counts:
             continue
 
-        wd_hour_total: dict = defaultdict(int)  # (wd, hour) -> total orders
-        wd_hour_days: dict = defaultdict(int)   # (wd, hour) -> dates with >=1 order
+        wd_hour_total: dict = defaultdict(int)
+        wd_hour_days: dict = defaultdict(int)
         for (d, h), n in counts.items():
             wd_hour_total[(d.weekday(), h)] += n
             wd_hour_days[(d.weekday(), h)] += 1
 
-        rows = []
-        for wd in range(7):
+        cells: dict = {}
+        for (wd, h), total in wd_hour_total.items():
             occ = len(wd_dates[wd])
-            if occ == 0:
+            if occ == 0 or wd_hour_days[(wd, h)] < max(2, occ * min_open_share):
                 continue
-            best = None  # (avg, hour)
-            for (w, h), total in wd_hour_total.items():
-                if w != wd:
-                    continue
-                # Require the hour to be reliably open (orders on >= half the days).
-                if wd_hour_days[(wd, h)] < max(2, occ * min_open_share):
-                    continue
-                avg = total / occ
-                if best is None or avg < best[0]:
-                    best = (avg, h)
-            if best:
-                rows.append({"day": _WD_ABBR[wd], "hour": _fmt_hour(best[1]), "avg": round(best[0], 1)})
-        if rows:
-            out[ds.location.name] = rows
+            cells[f"{wd}-{h}"] = round(total / occ, 1)
+        if not cells:
+            continue
+        hours = sorted({int(k.split("-")[1]) for k in cells})
+        out[ds.location.name] = {"hours": hours, "cells": cells}
     return out or None
 
 

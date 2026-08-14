@@ -29,7 +29,7 @@ from .aggregate import (
 )
 from .client import ToastClient
 from .config import AppConfig, load_config
-from .labor_impact import build_labor_impact, build_quiet_hours, build_ticket_heatmap
+from .labor_impact import build_labor_impact, build_orders_heatmap, build_ticket_heatmap
 from .models import Location, LocationDataset
 from .reports.excel import render_workbook
 from .reports.html import render_dashboard
@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     ticket_trend = ticket_times_by_week(completed, ws)
     labor_impact = build_labor_impact(completed, config.report.role_groups.get("Kitchen"))
     ticket_heatmap = build_ticket_heatmap(completed)
-    quiet_hours = build_quiet_hours(completed)
+    orders_heatmap = build_orders_heatmap(completed)
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).
@@ -277,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         ticket_trend=ticket_trend,
         labor_impact=labor_impact,
         ticket_heatmap=ticket_heatmap,
-        quiet_hours=quiet_hours,
+        orders_heatmap=orders_heatmap,
     )
 
     log.info("Wrote %s", xlsx_path)
