@@ -120,6 +120,8 @@ def _build_payload(
         # Location-only: day x hour ticket-time heatmap.
         "ticketHeatmap": (kpi_ctx.get("ticket_heatmap") or {}).get(present[0])
         if len(present) == 1 else None,
+        # Slowest hour (fewest orders) by weekday, per location shown on this page.
+        "quietHours": _quiet_hours_payload(kpi_ctx.get("quiet_hours"), present, loc_index),
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -280,6 +282,7 @@ def render_dashboard(
     ticket_trend: dict | None = None,
     labor_impact: dict | None = None,
     ticket_heatmap: dict | None = None,
+    quiet_hours: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -299,6 +302,7 @@ def render_dashboard(
         "ticket_trend": ticket_trend or {},
         "labor_impact": labor_impact or {},
         "ticket_heatmap": ticket_heatmap or {},
+        "quiet_hours": quiet_hours or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -385,6 +389,21 @@ def _ticket_trend_series(ticket_trend: dict | None, present: list[str], week_lab
         if any(v is not None for v in values):
             series.append({"name": bucket, "slot": i, "values": values})
     return {"series": series} if series else None
+
+
+def _quiet_hours_payload(quiet_hours: dict | None, present: list[str], loc_index: dict) -> dict | None:
+    """Shape the slowest-hour-by-weekday data for the locations on this page,
+    keeping each location's global color slot."""
+    if not quiet_hours:
+        return None
+    locs = [n for n in present if n in quiet_hours]
+    if not locs:
+        return None
+    return {
+        "locations": locs,
+        "slots": {n: loc_index.get(n, 0) for n in locs},
+        "byLoc": {n: quiet_hours[n] for n in locs},
+    }
 
 
 def _dinein_ticket_trend(ticket_trend: dict | None, present: list[str], week_labels: list[str]) -> dict | None:
@@ -546,6 +565,11 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #heatTable th:first-child, #heatTable td:first-child { text-align: left; color: var(--ink-2); font-weight: 600; }
   #heatTable td.cell { border-radius: 6px; color: #111; min-width: 34px; font-variant-numeric: tabular-nums; }
   #heatTable td.empty { background: var(--grid); opacity: .35; }
+  .qh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 6px; }
+  .qh-panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px 12px 6px; background: var(--surface); }
+  .qh-panel .qh-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 0 2px 4px; }
+  .qh-panel .qh-name { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; }
+  .qh-panel .qh-sub { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
   thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
   .tablewrap { max-height: 460px; overflow: auto; }
   details summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; }
@@ -616,6 +640,12 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <h2>Labor hours by role</h2>
     <p class="hint" id="role-week"></p>
     <div class="tablewrap"><table id="roleTable"></table></div>
+  </section>
+
+  <section class="card" id="quiet-card" style="display:none">
+    <h2>Slowest hour by day</h2>
+    <p class="hint">Each weekday's slowest hour — the operating hour with the fewest orders — and the average orders it still sees (last 8 weeks, local time). A read on the demand floor: a taller bar means the location stays busy even at its slowest.</p>
+    <div class="qh-grid" id="quiet-grid"></div>
   </section>
 
   <section class="card" id="ticket-card" style="display:none">
@@ -1000,6 +1030,48 @@ function renderDineTicket() {
   trendLine("chart-dine-ticket", d.weeks, d.values, palette()[0]);
 }
 
+// Slowest hour (fewest orders) by weekday — small multiples, one panel per location.
+function qhHourShort(h) { return h.replace(" AM", "a").replace(" PM", "p"); }
+function qhPanel(loc, slot, ymax) {
+  const rows = DATA.quietHours.byLoc[loc], c = palette()[slot % palette().length];
+  const W = 420, H = 240, m = { top: 22, right: 10, bottom: 38, left: 32 };
+  const pw = W - m.left - m.right, ph = H - m.top - m.bottom;
+  const bandw = pw / rows.length, x = i => m.left + bandw * i, y = v => m.top + ph - ph * v / ymax;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": loc + " slowest hour by day" });
+  for (let t = 0; t <= 4; t++) {
+    const v = ymax * t / 4, yy = y(v);
+    svg.appendChild(el("line", { x1: m.left, y1: yy, x2: W - m.right, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+    const lb = el("text", { x: m.left - 6, y: yy + 3.5, "text-anchor": "end", fill: "var(--muted)", "font-size": 10 }); lb.textContent = Math.round(v); svg.appendChild(lb);
+  }
+  rows.forEach((r, i) => {
+    const bw = bandw * 0.6, bx = x(i) + (bandw - bw) / 2, by = y(r.avg);
+    svg.appendChild(el("rect", { x: bx, y: by, width: bw, height: m.top + ph - by, fill: c, rx: 4 }));
+    const vl = el("text", { x: bx + bw / 2, y: by - 5, "text-anchor": "middle", fill: "var(--ink)", "font-size": 10.5, "font-weight": 600 }); vl.textContent = r.avg.toFixed(1); svg.appendChild(vl);
+    const dl = el("text", { x: bx + bw / 2, y: H - 21, "text-anchor": "middle", fill: "var(--ink-2)", "font-size": 10.5 }); dl.textContent = r.day; svg.appendChild(dl);
+    const hl = el("text", { x: bx + bw / 2, y: H - 9, "text-anchor": "middle", fill: "var(--muted)", "font-size": 9.5 }); hl.textContent = qhHourShort(r.hour); svg.appendChild(hl);
+    const hit = el("rect", { x: x(i), y: m.top, width: bandw, height: ph, fill: "transparent" });
+    hit.addEventListener("mousemove", e => showTip(`<div class="hd">${loc} · ${r.day}</div><div class="row"><span class="k">Slowest hour</span><span class="v">${r.hour}</span></div><div class="row"><span class="k">Avg orders</span><span class="v">${r.avg.toFixed(1)}</span></div>`, e.clientX, e.clientY));
+    hit.addEventListener("mouseleave", hideTip); svg.appendChild(hit);
+  });
+  return svg;
+}
+function qhUniform(loc) { const s = new Set(DATA.quietHours.byLoc[loc].map(r => r.hour)); return s.size === 1 ? "slowest " + [...s][0] : "hour varies"; }
+function renderQuietHours() {
+  const card = document.getElementById("quiet-card");
+  const q = DATA.quietHours;
+  if (!q || !q.locations.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  let ymax = 0; q.locations.forEach(l => q.byLoc[l].forEach(r => { ymax = Math.max(ymax, r.avg); }));
+  ymax = Math.max(5, Math.ceil(ymax * 1.15));
+  const grid = document.getElementById("quiet-grid"); grid.innerHTML = "";
+  q.locations.forEach(l => {
+    const panel = document.createElement("div"); panel.className = "qh-panel";
+    const head = document.createElement("div"); head.className = "qh-head";
+    head.innerHTML = `<span class="qh-name"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;background:${palette()[q.slots[l] % palette().length]}"></span>${l}</span><span class="qh-sub">${qhUniform(l)}</span>`;
+    panel.appendChild(head); panel.appendChild(qhPanel(l, q.slots[l], ymax)); grid.appendChild(panel);
+  });
+}
+
 // Location only: day x hour ticket-time heatmap.
 function renderTicketHeatmap() {
   const card = document.getElementById("ticket-heatmap-card");
@@ -1200,6 +1272,7 @@ function renderAll() {
   renderObservations();
   renderSplh();
   renderLaborByRole();
+  renderQuietHours();
   renderTicketTimes();
   renderTicketTrend();
   renderDineTicket();

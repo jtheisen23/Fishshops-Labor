@@ -122,6 +122,62 @@ def _for_location(ds: LocationDataset, titles: set[str]) -> dict | None:
     }
 
 
+_WD_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _fmt_hour(h: int) -> str:
+    ap = "AM" if h < 12 else "PM"
+    return f"{h % 12 or 12} {ap}"
+
+
+def build_quiet_hours(datasets: list[LocationDataset], min_open_share: float = 0.5) -> dict | None:
+    """For each location and weekday, find the slowest hour — the operating hour
+    with the fewest orders — and its average order count, over the window (local
+    time). Returns {location: [{day, hour, avg}, ... Mon..Sun]}."""
+    out: dict = {}
+    for ds in datasets:
+        tz = _tz(ds.location.timezone)
+        counts: dict = defaultdict(int)        # (date, hour) -> orders
+        wd_dates: dict = defaultdict(set)      # weekday -> operating dates
+        for o in ds.orders:
+            if o.voided:
+                continue
+            t = _to_local(o.opened_at, tz)
+            if not t:
+                continue
+            counts[(t.date(), t.hour)] += 1
+            wd_dates[t.weekday()].add(t.date())
+        if not counts:
+            continue
+
+        wd_hour_total: dict = defaultdict(int)  # (wd, hour) -> total orders
+        wd_hour_days: dict = defaultdict(int)   # (wd, hour) -> dates with >=1 order
+        for (d, h), n in counts.items():
+            wd_hour_total[(d.weekday(), h)] += n
+            wd_hour_days[(d.weekday(), h)] += 1
+
+        rows = []
+        for wd in range(7):
+            occ = len(wd_dates[wd])
+            if occ == 0:
+                continue
+            best = None  # (avg, hour)
+            for (w, h), total in wd_hour_total.items():
+                if w != wd:
+                    continue
+                # Require the hour to be reliably open (orders on >= half the days).
+                if wd_hour_days[(wd, h)] < max(2, occ * min_open_share):
+                    continue
+                avg = total / occ
+                if best is None or avg < best[0]:
+                    best = (avg, h)
+            if best:
+                rows.append({"day": _WD_ABBR[wd], "hour": _fmt_hour(best[1]), "avg": round(best[0], 1)})
+        if rows:
+            out[ds.location.name] = rows
+    return out or None
+
+
 def build_ticket_heatmap(datasets: list[LocationDataset], min_n: int = 3) -> dict | None:
     """Per-location median ticket time by (weekday, hour) in local time, for a
     day x hour heatmap. Cells below ``min_n`` tickets are omitted (too noisy).
