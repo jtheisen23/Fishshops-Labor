@@ -4,8 +4,9 @@ Layout:
   * "Summary" tab  — one row per (week, location) with every metric, plus a
     company total row per week.
   * One tab per location — that location's week-over-week trend.
-  * "Revenue Centers" tab — orders per day per revenue center per location, as
-    tidy rows (one row = location x day x revenue center) so it pivots cleanly.
+  * "Revenue Centers" tab — net sales and transactions per day per revenue
+    center per location, as tidy rows (one row = location x day x revenue
+    center) so it pivots cleanly.
 
 Currency/percent number formats are applied so the file is ready to read, not
 just a dump of numbers.
@@ -80,9 +81,12 @@ def _autosize(ws: Worksheet) -> None:
         ws.column_dimensions[get_column_letter(col)].width = min(max(width + 2, 12), 22)
 
 
-def _write_grid(ws: Worksheet, headers: list[str], rows: list[list]) -> None:
+def _write_grid(
+    ws: Worksheet, headers: list[str], rows: list[list], formats: list[str | None] | None = None
+) -> None:
     """Write an arbitrary header + rows block (used by tabs that aren't the
-    WeeklyMetrics column layout), then size the columns to fit."""
+    WeeklyMetrics column layout), then size the columns to fit. ``formats``
+    optionally gives a number format per column."""
     for col, label in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=label)
         cell.fill = _HEADER_FILL
@@ -90,7 +94,10 @@ def _write_grid(ws: Worksheet, headers: list[str], rows: list[list]) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center")
     for r, values in enumerate(rows, start=2):
         for c, v in enumerate(values, start=1):
-            ws.cell(row=r, column=c, value=v)
+            cell = ws.cell(row=r, column=c, value=v)
+            fmt = (formats or [None] * len(headers))[c - 1]
+            if fmt:
+                cell.number_format = fmt
     ws.freeze_panes = "A2"
     for col in range(1, len(headers) + 1):
         width = max(
@@ -101,15 +108,20 @@ def _write_grid(ws: Worksheet, headers: list[str], rows: list[list]) -> None:
 
 
 def _revenue_center_rows(revenue_centers: dict) -> list[list]:
-    """Flatten {location: {days, centers, counts}} into tidy rows. Zero-order
-    (location, day, center) combinations are written as 0 rather than skipped,
-    so a pivot over the block has no gaps."""
+    """Flatten {location: {days, centers, counts, sales}} into tidy rows. A
+    (location, day, center) combination with no orders is written as zero rather
+    than skipped, so a pivot over the block has no gaps."""
     rows: list[list] = []
     for name in sorted(revenue_centers):
         rc = revenue_centers[name]
         for day in rc["days"]:
             for center in rc["centers"]:
-                rows.append([name, day, center, int(rc["counts"].get(f"{day}|{center}", 0))])
+                key = f"{day}|{center}"
+                rows.append([
+                    name, day, center,
+                    int(rc["counts"].get(key, 0)),
+                    float(rc["sales"].get(key, 0.0)),
+                ])
     return rows
 
 
@@ -173,8 +185,9 @@ def render_workbook(
         ws = wb.create_sheet(title="Revenue Centers")
         _write_grid(
             ws,
-            ["Location", "Business Date", "Revenue Center", "Orders"],
+            ["Location", "Business Date", "Revenue Center", "Transactions", "Net Sales"],
             _revenue_center_rows(revenue_centers),
+            formats=[None, None, None, "#,##0", _MONEY],
         )
 
     wb.save(out_path)

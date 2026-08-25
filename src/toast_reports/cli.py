@@ -158,24 +158,29 @@ def _log_job_titles(datasets: list[LocationDataset]) -> None:
 
 
 def _log_revenue_centers(datasets: list[LocationDataset]) -> None:
-    """Log the revenue centers each location rings orders under. A location with
+    """Log the revenue centers each location rings sales under. A location with
     none configured in Toast shows as 'none' — that's what hides its
     revenue-center board, and it's the first thing to check if the board is
     missing."""
     for ds in datasets:
-        totals: dict[str, int] = {}
+        txns: dict[str, int] = {}
+        sales: dict[str, float] = {}
         for o in ds.orders:
             if o.voided:
                 continue
             name = (o.revenue_center or "").strip() or "(unassigned)"
-            totals[name] = totals.get(name, 0) + 1
-        if not totals:
+            txns[name] = txns.get(name, 0) + 1
+            sales[name] = sales.get(name, 0.0) + o.net_sales
+        if not txns:
             continue
-        if list(totals) == ["(unassigned)"]:
+        if list(txns) == ["(unassigned)"]:
             log.info("Revenue centers for %s: none — orders carry no revenue center",
                      ds.location.name)
             continue
-        summary = ", ".join(f"{n} ({c})" for n, c in sorted(totals.items(), key=lambda kv: -kv[1]))
+        summary = ", ".join(
+            f"{n} ({txns[n]:,} txns / ${sales[n]:,.0f})"
+            for n in sorted(txns, key=lambda k: -sales[k])
+        )
         log.info("Revenue centers for %s: %s", ds.location.name, summary)
 
 

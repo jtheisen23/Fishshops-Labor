@@ -423,20 +423,26 @@ def _revenue_center_payload(revenue_centers: dict | None, present: list[str]) ->
 
 
 def _revenue_center_summary(revenue_centers: dict | None, present: list[str]) -> dict | None:
-    """Overview board: orders per day by revenue center x location. Each
-    location is averaged over its own days of data, so locations that opened
-    (or started using revenue centers) mid-window aren't understated."""
+    """Overview board: net sales and transactions by revenue center x location,
+    over each location's own days of data (so a location that opened, or started
+    using revenue centers, mid-window isn't understated by a shared divisor)."""
     if not revenue_centers or len(present) < 2:
         return None
     locs = [n for n in present if n in revenue_centers]
     if not locs:
         return None
 
-    totals: dict[str, int] = {}
+    company_sales: dict[str, float] = {}
+    company_orders: dict[str, int] = {}
     for n in locs:
-        for center, orders in revenue_centers[n]["centerTotals"].items():
-            totals[center] = totals.get(center, 0) + orders
-    centers = sorted(totals, key=lambda c: (c == UNASSIGNED_CENTER, -totals[c], c))
+        rc = revenue_centers[n]
+        for center, amount in rc["centerSales"].items():
+            company_sales[center] = company_sales.get(center, 0.0) + amount
+            company_orders[center] = company_orders.get(center, 0) + rc["centerTotals"][center]
+    centers = sorted(
+        company_sales,
+        key=lambda c: (c == UNASSIGNED_CENTER, -company_sales[c], -company_orders[c], c),
+    )
 
     cells: dict = {}
     loc_totals: dict = {}
@@ -446,11 +452,22 @@ def _revenue_center_summary(revenue_centers: dict | None, present: list[str]) ->
         ndays = len(rc["days"]) or 1
         day_counts[n] = len(rc["days"])
         cells[n] = {
-            c: {"orders": v, "perDay": round(v / ndays, 1)}
-            for c, v in rc["centerTotals"].items()
+            c: {
+                "sales": amount,
+                "orders": rc["centerTotals"][c],
+                "salesPerDay": round(amount / ndays, 2),
+                "ordersPerDay": round(rc["centerTotals"][c] / ndays, 1),
+            }
+            for c, amount in rc["centerSales"].items()
         }
-        total = sum(rc["centerTotals"].values())
-        loc_totals[n] = {"orders": total, "perDay": round(total / ndays, 1)}
+        total_sales = round(sum(rc["centerSales"].values()), 2)
+        total_orders = sum(rc["centerTotals"].values())
+        loc_totals[n] = {
+            "sales": total_sales,
+            "orders": total_orders,
+            "salesPerDay": round(total_sales / ndays, 2),
+            "ordersPerDay": round(total_orders / ndays, 1),
+        }
 
     return {
         "centers": centers,
@@ -599,7 +616,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #dailyTable th:nth-child(2), #dailyTable td:nth-child(2),
   #ticketTable th:nth-child(2), #ticketTable td:nth-child(2),
   #liBandTable th:nth-child(2), #liBandTable td:nth-child(2),
-  #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  #roleTable th:nth-child(2), #roleTable td:nth-child(2),
+  #rcSummaryTable th:nth-child(2), #rcSummaryTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   #roleTable tr.total td, #rcSummaryTable tr.total td, #rcTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
   ul.obs { list-style: none; margin: 6px 0 0; padding: 0; }
@@ -635,6 +653,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
                                                      background: var(--surface);
                                                      box-shadow: 3px 0 0 var(--surface); }
   #rcTable thead th:first-child { z-index: 3; }
+  /* Second line in a revenue-center cell: transactions under the sales figure. */
+  .rc-sub { display: block; font-size: 11px; font-weight: 400; opacity: .78; margin-top: 1px; }
   .oh-block { margin-top: 16px; }
   .oh-block:first-child { margin-top: 2px; }
   .oh-name { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; margin: 0 2px 6px; }
@@ -699,16 +719,18 @@ _HTML_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section class="card" id="rc-summary-card" style="display:none">
-    <h2>Orders by revenue center</h2>
-    <p class="hint" id="rc-summary-hint">Average orders per day in each revenue center, by location. Open a location above for its day-by-day breakdown.</p>
+    <h2>Sales &amp; transactions by revenue center</h2>
+    <p class="hint" id="rc-summary-hint">Net sales and transaction count in each revenue center, by location. Open a location above for its day-by-day breakdown.</p>
     <div class="tablewrap"><table id="rcSummaryTable"></table></div>
+    <p class="hint" style="margin-top:10px">Each cell: net sales over the window, with transactions and share of that location's sales below.</p>
   </section>
 
   <section class="card" id="rc-card" style="display:none">
-    <h2>Orders per day by revenue center</h2>
-    <p class="hint" id="rc-hint">Order count in each revenue center by business day, most recent first. Darker = busier.</p>
+    <h2>Sales &amp; transactions per day by revenue center</h2>
+    <p class="hint" id="rc-hint">Net sales and transaction count in each revenue center by business day, most recent first. Darker = more sales.</p>
     <div class="tablewrap"><table id="rcTable" class="heat"></table></div>
     <div class="legend" id="rc-legend" style="margin-top:10px"></div>
+    <p class="hint" style="margin-top:10px">Each cell: net sales, with the transaction count below.</p>
   </section>
 
   <section class="card" id="splh-card" style="display:none">
@@ -1047,7 +1069,7 @@ function renderLaborByRole() {
   document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · " + exLabel + " excluded";
 }
 
-// Overview only: orders per day by revenue center x location.
+// Overview only: net sales + transactions by revenue center x location.
 function renderRevenueCenterSummary() {
   const card = document.getElementById("rc-summary-card");
   const d = DATA.revenueCenterSummary;
@@ -1060,30 +1082,36 @@ function renderRevenueCenterSummary() {
     body += `<tr><td>${esc(c)}</td>` + d.locations.map(l => {
       const cell = (d.cells[l] || {})[c];
       if (!cell) return "<td>—</td>";
-      const tot = (d.totals[l] || {}).orders || 0;
-      const share = tot ? (cell.orders / tot * 100).toFixed(1) : "0.0";
-      return `<td title="${esc(l)} · ${esc(c)} · ${num(cell.orders)} orders over ${d.days[l]} days">` +
-             `${num1(cell.perDay)}<span class="muted">/day (${share}%)</span></td>`;
+      const tot = (d.totals[l] || {}).sales || 0;
+      const share = tot ? (cell.sales / tot * 100).toFixed(1) : "0.0";
+      const tip = `${esc(l)} · ${esc(c)} · ${money(cell.sales)} and ${num(cell.orders)} ` +
+                  `transactions over ${d.days[l]} days (${money(cell.salesPerDay)} and ` +
+                  `${num1(cell.ordersPerDay)} transactions per day)`;
+      return `<td title="${tip}">${money(cell.sales)}` +
+             `<span class="rc-sub">${num(cell.orders)} txns · ${share}%</span></td>`;
     }).join("") + "</tr>";
   });
   body += `<tr class="total"><td><strong>All centers</strong></td>` +
-    d.locations.map(l => `<td><strong>${num1((d.totals[l] || {}).perDay)}</strong><span class="muted">/day</span></td>`).join("") +
-    "</tr></tbody>";
+    d.locations.map(l => {
+      const t = d.totals[l] || {};
+      return `<td><strong>${money(t.sales)}</strong>` +
+             `<span class="rc-sub">${num(t.orders)} txns</span></td>`;
+    }).join("") + "</tr></tbody>";
   document.getElementById("rcSummaryTable").innerHTML = head + body;
-  const days = d.locations.map(l => d.days[l]);
-  const span = Math.max.apply(null, days);
+  const span = Math.max.apply(null, d.locations.map(l => d.days[l]));
   document.getElementById("rc-summary-hint").textContent =
-    "Average orders per day in each revenue center, by location (last " + span +
+    "Net sales and transaction count in each revenue center, by location (last " + span +
     " days of trading). Open a location above for its day-by-day breakdown.";
 }
 
-// Location only: orders per day x revenue center.
+// Location only: net sales + transactions per day x revenue center.
 function renderRevenueCenters() {
   const card = document.getElementById("rc-card");
   const d = DATA.revenueCenters;
   if (!d || !d.days.length || !d.centers.length) { card.style.display = "none"; return; }
   card.style.display = "";
-  const max = d.max || 1;
+  // Shade by sales — the top number in each cell.
+  const max = d.maxSales || 1;
   const head = "<thead><tr><th>Day</th>" +
     d.centers.map(c => `<th>${esc(c)}</th>`).join("") + "<th>Total</th></tr></thead>";
   let body = "<tbody>";
@@ -1092,30 +1120,37 @@ function renderRevenueCenters() {
     const dow = DOW[new Date(day + "T00:00:00").getDay()];
     body += `<tr><td>${dow} ${fmtDay(day)}</td>`;
     d.centers.forEach(c => {
-      const v = d.counts[day + "|" + c];
-      if (v == null) { body += `<td class="cell empty"></td>`; return; }
-      const [bg, fg] = ordersBand(v / max);
-      body += `<td class="cell" style="background:${bg};color:${fg}" ` +
-              `title="${esc(c)} · ${dow} ${fmtDay(day)} · ${num(v)} orders">${num(v)}</td>`;
+      const key = day + "|" + c;
+      const n = d.counts[key];
+      if (n == null) { body += `<td class="cell empty"></td>`; return; }
+      const amount = d.sales[key] || 0;
+      const [bg, fg] = ordersBand(amount / max);
+      const tip = `${esc(c)} · ${dow} ${fmtDay(day)} · ${money(amount)} · ${num(n)} transactions`;
+      body += `<td class="cell" style="background:${bg};color:${fg}" title="${tip}">` +
+              `${money(amount)}<span class="rc-sub">${num(n)}</span></td>`;
     });
-    body += `<td><strong>${num(d.dayTotals[day])}</strong></td></tr>`;
+    body += `<td><strong>${money(d.daySales[day])}</strong>` +
+            `<span class="rc-sub">${num(d.dayTotals[day])} txns</span></td></tr>`;
   });
-  const grand = d.centers.reduce((a, c) => a + (d.centerTotals[c] || 0), 0);
+  const grandSales = d.centers.reduce((a, c) => a + (d.centerSales[c] || 0), 0);
+  const grandOrders = d.centers.reduce((a, c) => a + (d.centerTotals[c] || 0), 0);
   body += `<tr class="total"><td><strong>Total</strong></td>` +
     d.centers.map(c => {
-      const v = d.centerTotals[c] || 0;
-      const share = grand ? (v / grand * 100).toFixed(1) : "0.0";
-      return `<td><strong>${num(v)}</strong> <span class="muted">(${share}%)</span></td>`;
+      const amount = d.centerSales[c] || 0;
+      const share = grandSales ? (amount / grandSales * 100).toFixed(1) : "0.0";
+      return `<td><strong>${money(amount)}</strong>` +
+             `<span class="rc-sub">${num(d.centerTotals[c] || 0)} txns · ${share}%</span></td>`;
     }).join("") +
-    `<td><strong>${num(grand)}</strong></td></tr></tbody>`;
+    `<td><strong>${money(grandSales)}</strong>` +
+    `<span class="rc-sub">${num(grandOrders)} txns</span></td></tr></tbody>`;
   document.getElementById("rcTable").innerHTML = head + body;
   document.getElementById("rc-hint").textContent =
-    "Order count in each revenue center by business day, most recent first (last " +
-    d.days.length + " days of trading). Darker = busier.";
+    "Net sales and transaction count in each revenue center by business day, most recent first (last " +
+    d.days.length + " days of trading). Darker = more sales.";
   document.getElementById("rc-legend").innerHTML =
     `<span style="font-size:12px;color:var(--muted)">Fewer</span>` +
     [0.1, 0.3, 0.5, 0.7, 0.9].map(t => `<span class="swatch" style="background:${ordersBand(t)[0]}"></span>`).join("") +
-    `<span style="font-size:12px;color:var(--muted)">More orders</span>`;
+    `<span style="font-size:12px;color:var(--muted)">More sales</span>`;
 }
 
 // Location only: kitchen ticket time (fired -> ready) by channel.

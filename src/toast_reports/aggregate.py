@@ -360,20 +360,27 @@ UNASSIGNED_CENTER = "Unassigned"
 def orders_by_revenue_center(
     datasets: list[LocationDataset], days: int = 28
 ) -> dict | None:
-    """Order counts per business day per revenue center, per location.
+    """Net sales and transaction counts per business day per revenue center,
+    per location.
 
     Covers the most recent ``days`` business dates that have orders (the daily
     grid gets unreadable much past four weeks). Locations whose orders carry no
     revenue center at all are omitted — there is nothing to break down there.
 
+    Sales are net (pre-tax), matching every other sales figure in the report,
+    and voided orders count toward neither metric.
+
     Returns ``{location_name: {"centers": [...], "days": [iso...],
-    "counts": {"<iso>|<center>": n}, "dayTotals": {iso: n},
-    "centerTotals": {center: n}, "max": n}}`` or None when no location uses
-    revenue centers.
+    "counts": {"<iso>|<center>": n}, "sales": {"<iso>|<center>": amount},
+    "dayTotals": {iso: n}, "daySales": {iso: amount},
+    "centerTotals": {center: n}, "centerSales": {center: amount},
+    "max": n, "maxSales": amount}}`` or None when no location uses revenue
+    centers.
     """
     out: dict = {}
     for ds in datasets:
         counts: dict[tuple[date, str], int] = {}
+        sales: dict[tuple[date, str], float] = {}
         seen_days: set[date] = set()
         for o in ds.orders:
             if o.voided:
@@ -381,6 +388,7 @@ def orders_by_revenue_center(
             center = (o.revenue_center or "").strip() or UNASSIGNED_CENTER
             key = (o.business_date, center)
             counts[key] = counts.get(key, 0) + 1
+            sales[key] = sales.get(key, 0.0) + o.net_sales
             seen_days.add(o.business_date)
         if not counts:
             continue
@@ -390,27 +398,38 @@ def orders_by_revenue_center(
             continue
 
         day_list = sorted(seen_days)[-days:]
-        in_window = {d: True for d in day_list}
-        counts = {(d, c): n for (d, c), n in counts.items() if d in in_window}
+        in_window = set(day_list)
+        counts = {k: n for k, n in counts.items() if k[0] in in_window}
+        sales = {k: v for k, v in sales.items() if k[0] in in_window}
 
         center_totals: dict[str, int] = {}
+        center_sales: dict[str, float] = {}
         day_totals: dict[str, int] = {}
+        day_sales: dict[str, float] = {}
         for (d, c), n in counts.items():
+            iso, amount = d.isoformat(), sales[(d, c)]
             center_totals[c] = center_totals.get(c, 0) + n
-            day_totals[d.isoformat()] = day_totals.get(d.isoformat(), 0) + n
+            center_sales[c] = center_sales.get(c, 0.0) + amount
+            day_totals[iso] = day_totals.get(iso, 0) + n
+            day_sales[iso] = day_sales.get(iso, 0.0) + amount
 
-        # Busiest revenue center first, but always park Unassigned last: it's a
-        # data-quality bucket, not a real place in the restaurant.
+        # Biggest revenue center first by sales (the primary number on the
+        # board), but always park Unassigned last: it's a data-quality bucket,
+        # not a real place in the restaurant.
         centers = sorted(
             center_totals,
-            key=lambda c: (c == UNASSIGNED_CENTER, -center_totals[c], c),
+            key=lambda c: (c == UNASSIGNED_CENTER, -center_sales[c], -center_totals[c], c),
         )
         out[ds.location.name] = {
             "centers": centers,
             "days": [d.isoformat() for d in day_list],
             "counts": {f"{d.isoformat()}|{c}": n for (d, c), n in counts.items()},
+            "sales": {f"{d.isoformat()}|{c}": round(v, 2) for (d, c), v in sales.items()},
             "dayTotals": day_totals,
+            "daySales": {k: round(v, 2) for k, v in day_sales.items()},
             "centerTotals": center_totals,
+            "centerSales": {k: round(v, 2) for k, v in center_sales.items()},
             "max": max(counts.values()),
+            "maxSales": round(max(sales.values()), 2),
         }
     return out or None
