@@ -357,6 +357,14 @@ def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
 UNASSIGNED_CENTER = "Unassigned"
 
 
+def recent_order_days(ds: LocationDataset, days: int) -> list[date]:
+    """The most recent ``days`` business dates on which this location took a
+    (non-voided) order. Shared by the revenue-center boards so they all cover
+    exactly the same window and read together."""
+    seen = {o.business_date for o in ds.orders if not o.voided}
+    return sorted(seen)[-days:]
+
+
 def orders_by_revenue_center(
     datasets: list[LocationDataset], days: int = 28
 ) -> dict | None:
@@ -381,7 +389,6 @@ def orders_by_revenue_center(
     for ds in datasets:
         counts: dict[tuple[date, str], int] = {}
         sales: dict[tuple[date, str], float] = {}
-        seen_days: set[date] = set()
         for o in ds.orders:
             if o.voided:
                 continue
@@ -389,7 +396,6 @@ def orders_by_revenue_center(
             key = (o.business_date, center)
             counts[key] = counts.get(key, 0) + 1
             sales[key] = sales.get(key, 0.0) + o.net_sales
-            seen_days.add(o.business_date)
         if not counts:
             continue
         # Nothing to show when every order is unassigned — that's just the daily
@@ -397,7 +403,7 @@ def orders_by_revenue_center(
         if {c for _, c in counts} == {UNASSIGNED_CENTER}:
             continue
 
-        day_list = sorted(seen_days)[-days:]
+        day_list = recent_order_days(ds, days)
         in_window = set(day_list)
         counts = {k: n for k, n in counts.items() if k[0] in in_window}
         sales = {k: v for k, v in sales.items() if k[0] in in_window}

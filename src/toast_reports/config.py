@@ -50,6 +50,11 @@ class ReportSettings:
             "Shift Capt/Lead": ["Shift Capt", "Shift Lead"],
         }
     )
+    # Toast sales-category names -> Food / Alcohol, for the food-vs-alcohol mix
+    # by revenue center. Empty means "use the built-in defaults + keyword
+    # matching" (see menu_mix.DEFAULT_CATEGORY_GROUPS). Each run logs which
+    # category landed in which bucket, so this can be pinned to the real names.
+    sales_category_groups: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +102,7 @@ def load_config(config_path: str | os.PathLike[str] | None = "config.yaml") -> A
             title=str(r.get("title", report.title)),
             exclude_roles=[str(x) for x in (r.get("exclude_roles") or report.exclude_roles)],
             role_groups=dict(r.get("role_groups") or report.role_groups),
+            sales_category_groups=dict(r.get("sales_category_groups") or {}),
         )
 
     # Env-var location list overrides/augments if provided. Each comma-separated

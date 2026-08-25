@@ -31,3 +31,13 @@ report:
     - "Register"
     - "General Manager"
     - "Chef"
+
+  # Toast sales-category names -> Food / Alcohol, for the food-vs-alcohol split
+  # by revenue center. Leave empty to use the built-in defaults (Food / Liquor /
+  # Beer / Wine and friends) plus keyword matching. Every run logs each category
+  # it found and the bucket it landed in — pin anything the keywords read wrong:
+  #
+  #   sales_category_groups:
+  #     Alcohol: ["Liquor", "Beer", "Wine"]
+  #     Food:    ["Food", "Beer Cheese Bites"]   # "Beer ..." would read as booze
+  sales_category_groups: {}

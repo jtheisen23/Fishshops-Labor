@@ -72,6 +72,12 @@ class OrderRecord:
     # Patio, To-Go, ...). Empty when the location doesn't use revenue centers or
     # the order wasn't assigned one.
     revenue_center: str = ""
+    # Item sales on this order grouped by Toast sales category name (Food,
+    # Liquor, Beer, Wine, ...), used for the food-vs-alcohol mix. Key "" means
+    # the item carried no sales category. Amounts are summed selection prices,
+    # which exclude order-level discounts and service charges, so they do NOT
+    # add up to net_sales — treat them as a mix, not a total.
+    sales_by_category: dict[str, float] = field(default_factory=dict)
     # Whole-ticket kitchen time in minutes: first item fired -> last item marked
     # READY on the KDS. None when the kitchen didn't bump this ticket.
     ticket_ready_minutes: float | None = None

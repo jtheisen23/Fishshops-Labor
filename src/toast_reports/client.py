@@ -246,12 +246,36 @@ class ToastClient:
                 return out
         return {}
 
+    def get_sales_categories(self, location: Location) -> dict[str, str]:
+        """Map sales-category GUID -> name (e.g. "Food", "Liquor", "Beer",
+        "Wine", "N/A Beverage"). Order line items reference a sales category by
+        GUID only; this is what makes a food-vs-alcohol split possible.
+
+        Best-effort: a location that doesn't categorize its menu returns {} and
+        its items carry no category."""
+        for path in ("/config/v2/salesCategories", "/config/v1/salesCategories"):
+            try:
+                raw = self._get(path, location.guid)
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                log.warning("Could not fetch sales categories (%s) for %s: %s",
+                            path, location.guid, exc)
+                continue
+            out: dict[str, str] = {}
+            for c in raw if isinstance(raw, list) else []:
+                guid, name = c.get("guid"), c.get("name")
+                if guid and name:
+                    out[guid] = str(name)
+            if out:
+                return out
+        return {}
+
     def get_orders(
         self, location: Location, start: datetime, end: datetime
     ) -> list[OrderRecord]:
         lo, hi = start.date(), end.date()
         dining = self.get_dining_options(location)   # guid -> behavior
         centers = self.get_revenue_centers(location)  # guid -> name
+        categories = self.get_sales_categories(location)  # guid -> name
         # Pad the UTC query by a day on each side to capture orders whose local
         # business date lands at the window edges (timezone offset), chunk to stay
         # under Toast's range cap, then filter strictly by business date.
@@ -259,7 +283,7 @@ class ToastClient:
             "/orders/v2/ordersBulk", location.guid,
             start - timedelta(days=1), end + timedelta(days=1),
         )
-        orders = [_map_order(r, location, hi, dining, centers) for r in raw]
+        orders = [_map_order(r, location, hi, dining, centers, categories) for r in raw]
         return [o for o in orders if lo <= o.business_date <= hi]
 
 
@@ -305,6 +329,7 @@ def _map_order(
     fallback_date: date,
     dining: dict[str, str] | None = None,
     centers: dict[str, str] | None = None,
+    categories: dict[str, str] | None = None,
 ) -> OrderRecord:
     checks = row.get("checks") or []
     net_sales = 0.0
@@ -338,8 +363,31 @@ def _map_order(
         source=str(row.get("source") or ""),
         dining_behavior=str(behavior or ""),
         revenue_center=str(revenue_center or ""),
+        sales_by_category=_sales_by_category(checks, categories),
         ticket_ready_minutes=_ticket_ready_minutes(checks),
     )
+
+
+def _sales_by_category(checks: list, categories: dict[str, str] | None) -> dict[str, float]:
+    """Sum item sales per Toast sales category name for one order.
+
+    Only top-level selections are walked — a modifier's price rolls into its
+    parent item, so counting both would double-count. Voided items are skipped.
+    An item whose sales category is missing (or not in the config map) lands
+    under "", reported as Uncategorized.
+
+    A category present with a 0.00 total (a comped item) still records the key,
+    so "this ticket had food on it" stays true even when the food was free.
+    """
+    out: dict[str, float] = {}
+    for check in checks:
+        for sel in check.get("selections") or []:
+            if sel.get("voided"):
+                continue
+            guid = (sel.get("salesCategory") or {}).get("guid")
+            name = (categories or {}).get(guid, "") if guid else ""
+            out[name] = out.get(name, 0.0) + float(sel.get("price") or 0.0)
+    return out
 
 
 def _ticket_ready_minutes(checks: list) -> float | None:

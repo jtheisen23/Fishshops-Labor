@@ -53,6 +53,37 @@ Note these boards cover the last 28 days of trading, which includes the running
 current week — so they won't tie out against the `Summary` tab or the weekly
 charts, which cover completed weeks only.
 
+### Food vs. alcohol
+
+Each location's page also carries a *Food vs. alcohol by revenue center* board,
+built from the Toast **sales category** on every line item (Food, Liquor, Beer,
+Wine, N/A Beverage, …), resolved via `/config/v2/salesCategories`.
+
+Tickets routinely hold both a burger and a beer, so the transaction columns are
+a four-way split — **alcohol only / food only / both / neither** — which adds to
+100%. The dollar mix on the right is the actual food-vs-alcohol ratio. Those
+sales are summed item prices by category, before order-level discounts and
+service charges, so they're a mix, not a total, and won't equal net sales.
+
+Category names differ by restaurant, so the Food/Alcohol mapping is
+configurable under `report.sales_category_groups` (see `config.yaml`), with
+built-in defaults plus keyword matching as a fallback. Non-alcoholic names are
+explicitly ruled out before the keyword pass, so "Non-Alcoholic" and
+"N/A Beverage" don't get counted as booze. Every run logs each category it found
+and the bucket it landed in:
+
+```
+Sales categories for Oceanside: Food -> Food (6,734 orders / $162,112),
+  Beer -> Alcohol (879 orders / $10,684), N/A Beverage -> Other (218 orders / $4,476)
+```
+
+If a house category reads wrong there (a "Beer Cheese Bites" food item, say),
+pin it explicitly in `sales_category_groups` — an exact name match always beats
+the keyword guess. A location whose items carry no sales categories is left off
+this board entirely.
+
+### Notes on the Toast lookups
+
 Names come from Toast's config API (`/config/v2/revenueCenters`, falling back to
 `/config/v1/`); orders reference a center by GUID only. Two things to know:
 

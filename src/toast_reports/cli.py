@@ -31,6 +31,7 @@ from .aggregate import (
 from .client import ToastClient
 from .config import AppConfig, load_config
 from .labor_impact import build_labor_impact, build_orders_heatmap, build_ticket_heatmap
+from .menu_mix import category_buckets, food_alcohol_by_revenue_center
 from .models import Location, LocationDataset
 from .reports.excel import render_workbook
 from .reports.html import render_dashboard
@@ -184,6 +185,26 @@ def _log_revenue_centers(datasets: list[LocationDataset]) -> None:
         log.info("Revenue centers for %s: %s", ds.location.name, summary)
 
 
+def _log_sales_categories(datasets: list[LocationDataset], groups: dict) -> None:
+    """Log each Toast sales category found per location, the Food/Alcohol bucket
+    it was mapped to, and its item sales. This is the audit trail for the
+    food-vs-alcohol board: if a category is landing in the wrong bucket, pin it
+    explicitly under report.sales_category_groups in config.yaml."""
+    for name, cats in (category_buckets(datasets, groups) or {}).items():
+        named = {k: v for k, v in cats.items() if k.strip()}
+        if not named:
+            log.info("Sales categories for %s: none — items carry no sales category", name)
+            continue
+        parts = [
+            f"{cat} -> {v['bucket']} ({v['orders']:,} orders / ${v['sales']:,.0f})"
+            for cat, v in sorted(named.items(), key=lambda kv: -kv[1]["sales"])
+        ]
+        uncat = cats.get("")
+        if uncat:
+            parts.append(f"(uncategorized) ({uncat['orders']:,} orders / ${uncat['sales']:,.0f})")
+        log.info("Sales categories for %s: %s", name, ", ".join(parts))
+
+
 def _resolve_window(args: argparse.Namespace, week_start: str) -> tuple[date, date]:
     """Pull window ends at `as_of` (today) so the in-progress week is included;
     the split into completed vs current weeks happens downstream. Start reaches
@@ -251,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     _apply_role_exclusions(datasets, config.report.exclude_roles)
     _log_job_titles(datasets)
     _log_revenue_centers(datasets)
+    _log_sales_categories(datasets, config.report.sales_category_groups)
 
     ws = config.report.week_start
     cws = week_start_of(end, ws)                 # current week start (Monday)
@@ -276,6 +298,10 @@ def main(argv: list[str] | None = None) -> int:
     # Daily revenue-center grid spans completed weeks *and* the running current
     # week, so the most recent rows include today.
     revenue_centers = orders_by_revenue_center(datasets)
+    # Food vs alcohol split per revenue center, over the same 28-day window.
+    menu_mix = food_alcohol_by_revenue_center(
+        datasets, groups=config.report.sales_category_groups
+    )
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).
@@ -312,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         ticket_heatmap=ticket_heatmap,
         orders_heatmap=orders_heatmap,
         revenue_centers=revenue_centers,
+        menu_mix=menu_mix,
     )
 
     log.info("Wrote %s", xlsx_path)
