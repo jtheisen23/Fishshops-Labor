@@ -68,6 +68,10 @@ class OrderRecord:
     # Order channel/type, used for the kitchen ticket-time board.
     source: str = ""              # e.g. "In Store", "Online", "API"
     dining_behavior: str = ""     # DINE_IN / TAKE_OUT / DELIVERY
+    # Revenue center the order rang in under (Toast config: Dining Room, Bar,
+    # Patio, To-Go, ...). Empty when the location doesn't use revenue centers or
+    # the order wasn't assigned one.
+    revenue_center: str = ""
     # Whole-ticket kitchen time in minutes: first item fired -> last item marked
     # READY on the KDS. None when the kitchen didn't bump this ticket.
     ticket_ready_minutes: float | None = None

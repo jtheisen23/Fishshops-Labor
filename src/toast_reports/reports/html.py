@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from ..aggregate import WeeklyMetrics, group_by_week
+from ..aggregate import UNASSIGNED_CENTER, WeeklyMetrics, group_by_week
 from ..insights import build_observations
 
 # Where to look for a brand logo to embed at the top of the dashboard. First hit
@@ -122,6 +122,10 @@ def _build_payload(
         if len(present) == 1 else None,
         # Average orders by hour & day, per location shown on this page.
         "ordersHeatmap": _orders_heatmap_payload(kpi_ctx.get("orders_heatmap"), present, loc_index),
+        # Location-only: orders per day broken out by revenue center.
+        "revenueCenters": _revenue_center_payload(kpi_ctx.get("revenue_centers"), present),
+        # Overview-only: revenue center x location, orders per day.
+        "revenueCenterSummary": _revenue_center_summary(kpi_ctx.get("revenue_centers"), present),
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
         "excludeLabel": kpi_ctx.get("exclude_label", "Register"),
     }
@@ -283,6 +287,7 @@ def render_dashboard(
     labor_impact: dict | None = None,
     ticket_heatmap: dict | None = None,
     orders_heatmap: dict | None = None,
+    revenue_centers: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -303,6 +308,7 @@ def render_dashboard(
         "labor_impact": labor_impact or {},
         "ticket_heatmap": ticket_heatmap or {},
         "orders_heatmap": orders_heatmap or {},
+        "revenue_centers": revenue_centers or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -405,6 +411,53 @@ def _orders_heatmap_payload(orders_heatmap: dict | None, present: list[str], loc
         "slots": {n: loc_index.get(n, 0) for n in locs},
         "byLoc": {n: orders_heatmap[n] for n in locs},
         "max": mx,
+    }
+
+
+def _revenue_center_payload(revenue_centers: dict | None, present: list[str]) -> dict | None:
+    """The day x revenue-center order grid for a single-location page. Returns
+    None on the overview, or where the location doesn't use revenue centers."""
+    if not revenue_centers or len(present) != 1:
+        return None
+    return revenue_centers.get(present[0])
+
+
+def _revenue_center_summary(revenue_centers: dict | None, present: list[str]) -> dict | None:
+    """Overview board: orders per day by revenue center x location. Each
+    location is averaged over its own days of data, so locations that opened
+    (or started using revenue centers) mid-window aren't understated."""
+    if not revenue_centers or len(present) < 2:
+        return None
+    locs = [n for n in present if n in revenue_centers]
+    if not locs:
+        return None
+
+    totals: dict[str, int] = {}
+    for n in locs:
+        for center, orders in revenue_centers[n]["centerTotals"].items():
+            totals[center] = totals.get(center, 0) + orders
+    centers = sorted(totals, key=lambda c: (c == UNASSIGNED_CENTER, -totals[c], c))
+
+    cells: dict = {}
+    loc_totals: dict = {}
+    day_counts: dict = {}
+    for n in locs:
+        rc = revenue_centers[n]
+        ndays = len(rc["days"]) or 1
+        day_counts[n] = len(rc["days"])
+        cells[n] = {
+            c: {"orders": v, "perDay": round(v / ndays, 1)}
+            for c, v in rc["centerTotals"].items()
+        }
+        total = sum(rc["centerTotals"].values())
+        loc_totals[n] = {"orders": total, "perDay": round(total / ndays, 1)}
+
+    return {
+        "centers": centers,
+        "locations": locs,
+        "days": day_counts,
+        "cells": cells,
+        "totals": loc_totals,
     }
 
 
@@ -547,7 +600,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #ticketTable th:nth-child(2), #ticketTable td:nth-child(2),
   #liBandTable th:nth-child(2), #liBandTable td:nth-child(2),
   #roleTable th:nth-child(2), #roleTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
-  #roleTable tr.total td { border-top: 2px solid var(--axis); }
+  #roleTable tr.total td, #rcSummaryTable tr.total td, #rcTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
   ul.obs { list-style: none; margin: 6px 0 0; padding: 0; }
   ul.obs li { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0;
@@ -573,6 +626,15 @@ _HTML_TEMPLATE = r"""<!doctype html>
   table.heat th:first-child, table.heat td:first-child { text-align: left; color: var(--ink-2); font-weight: 600; }
   table.heat td.cell { border-radius: 6px; min-width: 30px; font-variant-numeric: tabular-nums; }
   table.heat td.empty { background: var(--grid); opacity: .35; }
+  /* The revenue-center grid runs to 28 rows inside a 460px scroller and can be
+     wider than a phone screen, so pin both the header and the day column. */
+  #rcTable thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+  /* The 3px border-spacing gap would let the next column show through at the
+     sticky edge, so paint over it with a matching shadow. */
+  #rcTable th:first-child, #rcTable td:first-child { position: sticky; left: 0; z-index: 1;
+                                                     background: var(--surface);
+                                                     box-shadow: 3px 0 0 var(--surface); }
+  #rcTable thead th:first-child { z-index: 3; }
   .oh-block { margin-top: 16px; }
   .oh-block:first-child { margin-top: 2px; }
   .oh-name { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; margin: 0 2px 6px; }
@@ -634,6 +696,19 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <h2>Current week</h2>
     <p class="hint" id="daily-hint">Net sales, labor hours, labor % of sales, and sales per labor hour by day this week (Register excluded). Updates daily.</p>
     <div class="tablewrap"><table id="dailyTable"></table></div>
+  </section>
+
+  <section class="card" id="rc-summary-card" style="display:none">
+    <h2>Orders by revenue center</h2>
+    <p class="hint" id="rc-summary-hint">Average orders per day in each revenue center, by location. Open a location above for its day-by-day breakdown.</p>
+    <div class="tablewrap"><table id="rcSummaryTable"></table></div>
+  </section>
+
+  <section class="card" id="rc-card" style="display:none">
+    <h2>Orders per day by revenue center</h2>
+    <p class="hint" id="rc-hint">Order count in each revenue center by business day, most recent first. Darker = busier.</p>
+    <div class="tablewrap"><table id="rcTable" class="heat"></table></div>
+    <div class="legend" id="rc-legend" style="margin-top:10px"></div>
   </section>
 
   <section class="card" id="splh-card" style="display:none">
@@ -918,6 +993,8 @@ function renderTable() {
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+// JS Date.getDay(): 0 = Sunday.
+const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 function fmtDay(iso) { const p = iso.split("-"); return MONTHS[+p[1]-1] + " " + (+p[2]); }
 function changeCell(change) {
   if (change == null) return "—";
@@ -968,6 +1045,77 @@ function renderLaborByRole() {
     "</tr></tbody>";
   document.getElementById("roleTable").innerHTML = head + body;
   document.getElementById("role-week").textContent = "Week of " + d.weekOf + " · " + exLabel + " excluded";
+}
+
+// Overview only: orders per day by revenue center x location.
+function renderRevenueCenterSummary() {
+  const card = document.getElementById("rc-summary-card");
+  const d = DATA.revenueCenterSummary;
+  if (!d || !d.centers.length || !d.locations.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const head = "<thead><tr><th>Revenue center</th>" +
+    d.locations.map(l => `<th>${esc(l)}</th>`).join("") + "</tr></thead>";
+  let body = "<tbody>";
+  d.centers.forEach(c => {
+    body += `<tr><td>${esc(c)}</td>` + d.locations.map(l => {
+      const cell = (d.cells[l] || {})[c];
+      if (!cell) return "<td>—</td>";
+      const tot = (d.totals[l] || {}).orders || 0;
+      const share = tot ? (cell.orders / tot * 100).toFixed(1) : "0.0";
+      return `<td title="${esc(l)} · ${esc(c)} · ${num(cell.orders)} orders over ${d.days[l]} days">` +
+             `${num1(cell.perDay)}<span class="muted">/day (${share}%)</span></td>`;
+    }).join("") + "</tr>";
+  });
+  body += `<tr class="total"><td><strong>All centers</strong></td>` +
+    d.locations.map(l => `<td><strong>${num1((d.totals[l] || {}).perDay)}</strong><span class="muted">/day</span></td>`).join("") +
+    "</tr></tbody>";
+  document.getElementById("rcSummaryTable").innerHTML = head + body;
+  const days = d.locations.map(l => d.days[l]);
+  const span = Math.max.apply(null, days);
+  document.getElementById("rc-summary-hint").textContent =
+    "Average orders per day in each revenue center, by location (last " + span +
+    " days of trading). Open a location above for its day-by-day breakdown.";
+}
+
+// Location only: orders per day x revenue center.
+function renderRevenueCenters() {
+  const card = document.getElementById("rc-card");
+  const d = DATA.revenueCenters;
+  if (!d || !d.days.length || !d.centers.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const max = d.max || 1;
+  const head = "<thead><tr><th>Day</th>" +
+    d.centers.map(c => `<th>${esc(c)}</th>`).join("") + "<th>Total</th></tr></thead>";
+  let body = "<tbody>";
+  // Most recent day first — that's the one anyone opening this looks for.
+  d.days.slice().reverse().forEach(day => {
+    const dow = DOW[new Date(day + "T00:00:00").getDay()];
+    body += `<tr><td>${dow} ${fmtDay(day)}</td>`;
+    d.centers.forEach(c => {
+      const v = d.counts[day + "|" + c];
+      if (v == null) { body += `<td class="cell empty"></td>`; return; }
+      const [bg, fg] = ordersBand(v / max);
+      body += `<td class="cell" style="background:${bg};color:${fg}" ` +
+              `title="${esc(c)} · ${dow} ${fmtDay(day)} · ${num(v)} orders">${num(v)}</td>`;
+    });
+    body += `<td><strong>${num(d.dayTotals[day])}</strong></td></tr>`;
+  });
+  const grand = d.centers.reduce((a, c) => a + (d.centerTotals[c] || 0), 0);
+  body += `<tr class="total"><td><strong>Total</strong></td>` +
+    d.centers.map(c => {
+      const v = d.centerTotals[c] || 0;
+      const share = grand ? (v / grand * 100).toFixed(1) : "0.0";
+      return `<td><strong>${num(v)}</strong> <span class="muted">(${share}%)</span></td>`;
+    }).join("") +
+    `<td><strong>${num(grand)}</strong></td></tr></tbody>`;
+  document.getElementById("rcTable").innerHTML = head + body;
+  document.getElementById("rc-hint").textContent =
+    "Order count in each revenue center by business day, most recent first (last " +
+    d.days.length + " days of trading). Darker = busier.";
+  document.getElementById("rc-legend").innerHTML =
+    `<span style="font-size:12px;color:var(--muted)">Fewer</span>` +
+    [0.1, 0.3, 0.5, 0.7, 0.9].map(t => `<span class="swatch" style="background:${ordersBand(t)[0]}"></span>`).join("") +
+    `<span style="font-size:12px;color:var(--muted)">More orders</span>`;
 }
 
 // Location only: kitchen ticket time (fired -> ready) by channel.
@@ -1251,7 +1399,7 @@ function renderDaily() {
 }
 
 // Data-driven observations (company summary on the overview, per-location else).
-function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 function renderObservations() {
   const card = document.getElementById("obs-card");
   const obs = DATA.observations || [];
@@ -1286,6 +1434,8 @@ function renderAll() {
   renderSplh();
   renderLaborByRole();
   renderOrdersHeatmap();
+  renderRevenueCenterSummary();
+  renderRevenueCenters();
   renderTicketTimes();
   renderTicketTrend();
   renderDineTicket();

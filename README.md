@@ -6,8 +6,8 @@ Pulls data from the [Toast POS API](https://doc.toasttab.com/) and builds
 Two outputs per run:
 
 - **`output/weekly-report-<date>.xlsx`** — an Excel workbook with a `Summary`
-  tab (every week × location, plus a company total per week) and one tab per
-  location.
+  tab (every week × location, plus a company total per week), one tab per
+  location, and a `Revenue Centers` tab of daily order counts.
 - **`output/index.html`** — a self-contained, interactive dashboard (no CDN, no
   network) that opens in any browser and can be published straight to GitHub
   Pages. Theme-aware, colorblind-safe, with hover tooltips and a full data table.
@@ -29,6 +29,30 @@ Per location, per week:
 | Labor cost | Wage cost (overtime paid at 1.5×) |
 | **Labor %** | Labor cost ÷ net sales — the efficiency number managers watch |
 | **Sales / labor hour** | Net sales ÷ labor hours |
+
+## Revenue centers
+
+Orders are also broken out by **revenue center** — the areas a location rings
+sales under in Toast (Dining Room, Bar, Patio, To-Go, …):
+
+- **Each location's page** gets an *Orders per day by revenue center* grid — one
+  row per business day (most recent first, last 28 days of trading), one column
+  per revenue center, shaded by volume, with day and center totals.
+- **The overview page** gets an *Orders by revenue center* table — average
+  orders per day per center for every location side by side.
+- **The workbook** gets a `Revenue Centers` tab of tidy
+  `Location | Business Date | Revenue Center | Orders` rows, ready to pivot.
+
+Names come from Toast's config API (`/config/v2/revenueCenters`, falling back to
+`/config/v1/`); orders reference a center by GUID only. Two things to know:
+
+- A location that doesn't use revenue centers is **left off these boards**
+  entirely — the breakdown would just restate its daily order count. Every run
+  logs what it found per location (`Revenue centers for Pacific Beach: …`), so
+  that log line is the first place to look if a board is missing.
+- Orders at a location that *does* use revenue centers but that weren't assigned
+  one land in an **Unassigned** column, which always sorts last. It's there so
+  the daily totals reconcile with transaction counts elsewhere in the report.
 
 ## Quick start (see it now, no credentials)
 

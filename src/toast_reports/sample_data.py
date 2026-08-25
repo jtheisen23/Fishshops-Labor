@@ -21,6 +21,17 @@ _WAGES = {
 }
 
 
+# Dine-in revenue centers vary by location the way they do in a real Toast
+# config: every shop rings dine-in in a Dining Room, but only some have a Bar or
+# a Patio. Weighted so the dining room carries most of the volume.
+_DINE_IN_CENTERS = [
+    ["Dining Room", "Dining Room", "Bar", "Patio"],
+    ["Dining Room", "Dining Room", "Bar"],
+    ["Dining Room", "Dining Room", "Patio"],
+    ["Dining Room"],
+]
+
+
 def build_sample_datasets(
     locations: list[Location] | None = None, weeks: int = 4, end: date | None = None
 ) -> list[LocationDataset]:
@@ -48,6 +59,7 @@ def build_sample_datasets(
         # Give each location a different volume profile.
         base_covers = 60 + li * 25
         bumps_tickets = li == bump_idx
+        dine_in_centers = _DINE_IN_CENTERS[li % len(_DINE_IN_CENTERS)]
         ds = LocationDataset(location=loc)
 
         day = start
@@ -62,6 +74,14 @@ def build_sample_datasets(
                 tip = round(net * rng.uniform(0.1, 0.22), 2)
                 opened = datetime.combine(day, time(rng.randint(11, 21), rng.randint(0, 59)))
                 source, behavior = rng.choice(_CHANNELS)
+                # Revenue center follows the channel: dine-in rings in a room,
+                # digital orders on the online center, counter to-go on To-Go.
+                if behavior == "DINE_IN":
+                    revenue_center = rng.choice(dine_in_centers)
+                elif source in ("Online", "API"):
+                    revenue_center = "Online"
+                else:
+                    revenue_center = "To-Go"
                 # Only the KDS-bumping location has fired->ready times; vary a bit
                 # by channel so the board shows a realistic spread.
                 ticket_mins = None
@@ -81,6 +101,7 @@ def build_sample_datasets(
                         tips=tip,
                         source=source,
                         dining_behavior=behavior,
+                        revenue_center=revenue_center,
                         ticket_ready_minutes=ticket_mins,
                     )
                 )

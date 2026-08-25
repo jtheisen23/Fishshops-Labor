@@ -23,6 +23,7 @@ from .aggregate import (
     aggregate_daily,
     aggregate_weekly,
     labor_by_role_last_week,
+    orders_by_revenue_center,
     ticket_times_by_week,
     ticket_times_last_week,
     week_start_of,
@@ -156,6 +157,28 @@ def _log_job_titles(datasets: list[LocationDataset]) -> None:
             log.info("  %-28s %.1f", title, hrs)
 
 
+def _log_revenue_centers(datasets: list[LocationDataset]) -> None:
+    """Log the revenue centers each location rings orders under. A location with
+    none configured in Toast shows as 'none' — that's what hides its
+    revenue-center board, and it's the first thing to check if the board is
+    missing."""
+    for ds in datasets:
+        totals: dict[str, int] = {}
+        for o in ds.orders:
+            if o.voided:
+                continue
+            name = (o.revenue_center or "").strip() or "(unassigned)"
+            totals[name] = totals.get(name, 0) + 1
+        if not totals:
+            continue
+        if list(totals) == ["(unassigned)"]:
+            log.info("Revenue centers for %s: none — orders carry no revenue center",
+                     ds.location.name)
+            continue
+        summary = ", ".join(f"{n} ({c})" for n, c in sorted(totals.items(), key=lambda kv: -kv[1]))
+        log.info("Revenue centers for %s: %s", ds.location.name, summary)
+
+
 def _resolve_window(args: argparse.Namespace, week_start: str) -> tuple[date, date]:
     """Pull window ends at `as_of` (today) so the in-progress week is included;
     the split into completed vs current weeks happens downstream. Start reaches
@@ -222,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _apply_role_exclusions(datasets, config.report.exclude_roles)
     _log_job_titles(datasets)
+    _log_revenue_centers(datasets)
 
     ws = config.report.week_start
     cws = week_start_of(end, ws)                 # current week start (Monday)
@@ -244,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
     labor_impact = build_labor_impact(completed, config.report.role_groups.get("Kitchen"))
     ticket_heatmap = build_ticket_heatmap(completed)
     orders_heatmap = build_orders_heatmap(completed)
+    # Daily revenue-center grid spans completed weeks *and* the running current
+    # week, so the most recent rows include today.
+    revenue_centers = orders_by_revenue_center(datasets)
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).
@@ -265,7 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     stamp = end.isoformat()
     # Stable filename so the dashboard can link to it; the download is offered
     # to the browser under a dated name for the user's Downloads folder.
-    xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report.xlsx", config.report.title)
+    xlsx_path = render_workbook(metrics, f"{output_dir}/weekly-report.xlsx", config.report.title,
+                                revenue_centers=revenue_centers)
     html_path = render_dashboard(
         metrics, f"{output_dir}/index.html", config.report.title,
         current_daily=current_daily, labor_by_role=labor_by_role,
@@ -278,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         labor_impact=labor_impact,
         ticket_heatmap=ticket_heatmap,
         orders_heatmap=orders_heatmap,
+        revenue_centers=revenue_centers,
     )
 
     log.info("Wrote %s", xlsx_path)

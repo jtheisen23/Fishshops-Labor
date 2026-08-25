@@ -349,3 +349,68 @@ def aggregate_daily(datasets: list[LocationDataset]) -> list[DailyMetrics]:
             m.labor_cost += te.labor_cost
 
     return sorted(buckets.values(), key=lambda m: (m.business_date, m.location_name))
+
+
+# Orders that carry no revenue center (location doesn't use them, or the order
+# wasn't assigned one) are reported under this label rather than dropped, so the
+# per-day totals always reconcile with the transaction counts elsewhere.
+UNASSIGNED_CENTER = "Unassigned"
+
+
+def orders_by_revenue_center(
+    datasets: list[LocationDataset], days: int = 28
+) -> dict | None:
+    """Order counts per business day per revenue center, per location.
+
+    Covers the most recent ``days`` business dates that have orders (the daily
+    grid gets unreadable much past four weeks). Locations whose orders carry no
+    revenue center at all are omitted — there is nothing to break down there.
+
+    Returns ``{location_name: {"centers": [...], "days": [iso...],
+    "counts": {"<iso>|<center>": n}, "dayTotals": {iso: n},
+    "centerTotals": {center: n}, "max": n}}`` or None when no location uses
+    revenue centers.
+    """
+    out: dict = {}
+    for ds in datasets:
+        counts: dict[tuple[date, str], int] = {}
+        seen_days: set[date] = set()
+        for o in ds.orders:
+            if o.voided:
+                continue
+            center = (o.revenue_center or "").strip() or UNASSIGNED_CENTER
+            key = (o.business_date, center)
+            counts[key] = counts.get(key, 0) + 1
+            seen_days.add(o.business_date)
+        if not counts:
+            continue
+        # Nothing to show when every order is unassigned — that's just the daily
+        # order count, which the current-week board already covers.
+        if {c for _, c in counts} == {UNASSIGNED_CENTER}:
+            continue
+
+        day_list = sorted(seen_days)[-days:]
+        in_window = {d: True for d in day_list}
+        counts = {(d, c): n for (d, c), n in counts.items() if d in in_window}
+
+        center_totals: dict[str, int] = {}
+        day_totals: dict[str, int] = {}
+        for (d, c), n in counts.items():
+            center_totals[c] = center_totals.get(c, 0) + n
+            day_totals[d.isoformat()] = day_totals.get(d.isoformat(), 0) + n
+
+        # Busiest revenue center first, but always park Unassigned last: it's a
+        # data-quality bucket, not a real place in the restaurant.
+        centers = sorted(
+            center_totals,
+            key=lambda c: (c == UNASSIGNED_CENTER, -center_totals[c], c),
+        )
+        out[ds.location.name] = {
+            "centers": centers,
+            "days": [d.isoformat() for d in day_list],
+            "counts": {f"{d.isoformat()}|{c}": n for (d, c), n in counts.items()},
+            "dayTotals": day_totals,
+            "centerTotals": center_totals,
+            "max": max(counts.values()),
+        }
+    return out or None
