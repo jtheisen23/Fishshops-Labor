@@ -223,11 +223,35 @@ class ToastClient:
                 return out
         return {}
 
+    def get_revenue_centers(self, location: Location) -> dict[str, str]:
+        """Map revenue-center GUID -> name (e.g. "Dining Room", "Bar", "Patio",
+        "To-Go") from the config API. Orders reference a revenue center by GUID
+        only, so we resolve names here.
+
+        Best-effort: a location that doesn't use revenue centers returns {} and
+        its orders simply carry no revenue center."""
+        for path in ("/config/v2/revenueCenters", "/config/v1/revenueCenters"):
+            try:
+                raw = self._get(path, location.guid)
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                log.warning("Could not fetch revenue centers (%s) for %s: %s",
+                            path, location.guid, exc)
+                continue
+            out: dict[str, str] = {}
+            for rc in raw if isinstance(raw, list) else []:
+                guid, name = rc.get("guid"), rc.get("name")
+                if guid and name:
+                    out[guid] = str(name)
+            if out:
+                return out
+        return {}
+
     def get_orders(
         self, location: Location, start: datetime, end: datetime
     ) -> list[OrderRecord]:
         lo, hi = start.date(), end.date()
-        dining = self.get_dining_options(location)  # guid -> behavior
+        dining = self.get_dining_options(location)   # guid -> behavior
+        centers = self.get_revenue_centers(location)  # guid -> name
         # Pad the UTC query by a day on each side to capture orders whose local
         # business date lands at the window edges (timezone offset), chunk to stay
         # under Toast's range cap, then filter strictly by business date.
@@ -235,7 +259,7 @@ class ToastClient:
             "/orders/v2/ordersBulk", location.guid,
             start - timedelta(days=1), end + timedelta(days=1),
         )
-        orders = [_map_order(r, location, hi, dining) for r in raw]
+        orders = [_map_order(r, location, hi, dining, centers) for r in raw]
         return [o for o in orders if lo <= o.business_date <= hi]
 
 
@@ -276,7 +300,11 @@ def _map_time_entry(
 
 
 def _map_order(
-    row: dict, location: Location, fallback_date: date, dining: dict[str, str] | None = None
+    row: dict,
+    location: Location,
+    fallback_date: date,
+    dining: dict[str, str] | None = None,
+    centers: dict[str, str] | None = None,
 ) -> OrderRecord:
     checks = row.get("checks") or []
     net_sales = 0.0
@@ -292,6 +320,10 @@ def _map_order(
             tips += float(payment.get("tipAmount") or 0.0)
 
     behavior = (dining or {}).get((row.get("diningOption") or {}).get("guid"), "")
+    # `revenueCenter` is a Toast reference ({guid, entityType}); resolve it to a
+    # name via the config map. Unknown/absent -> "" (reported as Unassigned).
+    rc_guid = (row.get("revenueCenter") or {}).get("guid")
+    revenue_center = (centers or {}).get(rc_guid, "") if rc_guid else ""
     return OrderRecord(
         location_guid=location.guid,
         business_date=_parse_business_date(row.get("businessDate"), fallback_date),
@@ -305,6 +337,7 @@ def _map_order(
         voided=bool(row.get("voided") or False),
         source=str(row.get("source") or ""),
         dining_behavior=str(behavior or ""),
+        revenue_center=str(revenue_center or ""),
         ticket_ready_minutes=_ticket_ready_minutes(checks),
     )
 

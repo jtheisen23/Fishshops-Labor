@@ -6,8 +6,8 @@ Pulls data from the [Toast POS API](https://doc.toasttab.com/) and builds
 Two outputs per run:
 
 - **`output/weekly-report-<date>.xlsx`** — an Excel workbook with a `Summary`
-  tab (every week × location, plus a company total per week) and one tab per
-  location.
+  tab (every week × location, plus a company total per week), one tab per
+  location, and a `Revenue Centers` tab of daily sales and transaction counts.
 - **`output/index.html`** — a self-contained, interactive dashboard (no CDN, no
   network) that opens in any browser and can be published straight to GitHub
   Pages. Theme-aware, colorblind-safe, with hover tooltips and a full data table.
@@ -29,6 +29,42 @@ Per location, per week:
 | Labor cost | Wage cost (overtime paid at 1.5×) |
 | **Labor %** | Labor cost ÷ net sales — the efficiency number managers watch |
 | **Sales / labor hour** | Net sales ÷ labor hours |
+
+## Revenue centers
+
+Sales and transactions are also broken out by **revenue center** — the areas a
+location rings sales under in Toast (Dining Room, Bar, Patio, To-Go, …). Both
+metrics appear together everywhere: net sales (pre-tax, as everywhere else in
+the report) with the transaction count beneath it.
+
+- **Each location's page** gets a *Sales & transactions per day by revenue
+  center* grid — one row per business day (most recent first, last 28 days of
+  trading), one column per revenue center, shaded by sales, with day totals, a
+  center total row, and each center's share of the location's sales.
+- **The overview page** gets a *Sales & transactions by revenue center* table —
+  every location side by side, so you can compare one shop's patio against
+  another's. Each location is measured over its own days of data, so a location
+  that opened mid-window isn't understated.
+- **The workbook** gets a `Revenue Centers` tab of tidy
+  `Location | Business Date | Revenue Center | Transactions | Net Sales` rows,
+  ready to pivot.
+
+Note these boards cover the last 28 days of trading, which includes the running
+current week — so they won't tie out against the `Summary` tab or the weekly
+charts, which cover completed weeks only.
+
+Names come from Toast's config API (`/config/v2/revenueCenters`, falling back to
+`/config/v1/`); orders reference a center by GUID only. Two things to know:
+
+- A location that doesn't use revenue centers is **left off these boards**
+  entirely — the breakdown would just restate its daily order count. Every run
+  logs what it found per location (`Revenue centers for Pacific Beach: Dining
+  Room (798 txns / $27,603), …`), so that log line is the first place to look if
+  a board is missing.
+- Orders at a location that *does* use revenue centers but that weren't assigned
+  one land in an **Unassigned** column, which always sorts last. It's there so
+  the daily totals reconcile with the sales and transaction counts elsewhere in
+  the report rather than quietly going missing.
 
 ## Quick start (see it now, no credentials)
 
