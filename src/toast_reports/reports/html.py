@@ -124,6 +124,8 @@ def _build_payload(
         "ordersHeatmap": _orders_heatmap_payload(kpi_ctx.get("orders_heatmap"), present, loc_index),
         # Location-only: orders per day broken out by revenue center.
         "revenueCenters": _revenue_center_payload(kpi_ctx.get("revenue_centers"), present),
+        # Location-only: food vs alcohol split per revenue center.
+        "menuMix": _menu_mix_payload(kpi_ctx.get("menu_mix"), present),
         # Overview-only: revenue center x location, orders per day.
         "revenueCenterSummary": _revenue_center_summary(kpi_ctx.get("revenue_centers"), present),
         # Short label for roles excluded from all labor figures (e.g. Register & GM).
@@ -288,6 +290,7 @@ def render_dashboard(
     ticket_heatmap: dict | None = None,
     orders_heatmap: dict | None = None,
     revenue_centers: dict | None = None,
+    menu_mix: dict | None = None,
 ) -> Path:
     """Write the overview page (index.html) plus one page per location, all in
     the same directory and cross-linked by a button nav. Returns the index path."""
@@ -309,6 +312,7 @@ def render_dashboard(
         "ticket_heatmap": ticket_heatmap or {},
         "orders_heatmap": orders_heatmap or {},
         "revenue_centers": revenue_centers or {},
+        "menu_mix": menu_mix or {},
     }
 
     # Current-week daily rows grouped by location (chronological, Mon first).
@@ -420,6 +424,15 @@ def _revenue_center_payload(revenue_centers: dict | None, present: list[str]) ->
     if not revenue_centers or len(present) != 1:
         return None
     return revenue_centers.get(present[0])
+
+
+def _menu_mix_payload(menu_mix: dict | None, present: list[str]) -> dict | None:
+    """Food-vs-alcohol split per revenue center for a single-location page.
+    Returns None on the overview, or where the location's items carry no
+    sales categories."""
+    if not menu_mix or len(present) != 1:
+        return None
+    return menu_mix.get(present[0])
 
 
 def _revenue_center_summary(revenue_centers: dict | None, present: list[str]) -> dict | None:
@@ -617,7 +630,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #ticketTable th:nth-child(2), #ticketTable td:nth-child(2),
   #liBandTable th:nth-child(2), #liBandTable td:nth-child(2),
   #roleTable th:nth-child(2), #roleTable td:nth-child(2),
-  #rcSummaryTable th:nth-child(2), #rcSummaryTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  #rcSummaryTable th:nth-child(2), #rcSummaryTable td:nth-child(2),
+  #mixTable th:nth-child(2), #mixTable td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
   #roleTable tr.total td, #rcSummaryTable tr.total td, #rcTable tr.total td { border-top: 2px solid var(--axis); }
   .muted { color: var(--muted); }
   ul.obs { list-style: none; margin: 6px 0 0; padding: 0; }
@@ -731,6 +745,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
     <div class="tablewrap"><table id="rcTable" class="heat"></table></div>
     <div class="legend" id="rc-legend" style="margin-top:10px"></div>
     <p class="hint" style="margin-top:10px">Each cell: net sales, with the transaction count below.</p>
+  </section>
+
+  <section class="card" id="mix-card" style="display:none">
+    <h2>Food vs. alcohol by revenue center</h2>
+    <p class="hint" id="mix-hint">How each revenue center's tickets split between food and alcohol.</p>
+    <div class="tablewrap"><table id="mixTable"></table></div>
+    <p class="hint" style="margin-top:10px">Tickets often hold both, so the transaction columns are a four-way split (they add to 100%), not a food/alcohol ratio. The sales mix on the right is the ratio. Sales are item prices by Toast sales category, before order-level discounts — a mix, not a total.</p>
   </section>
 
   <section class="card" id="splh-card" style="display:none">
@@ -1153,6 +1174,36 @@ function renderRevenueCenters() {
     `<span style="font-size:12px;color:var(--muted)">More sales</span>`;
 }
 
+// Location only: food vs alcohol split per revenue center.
+function renderMenuMix() {
+  const card = document.getElementById("mix-card");
+  const d = DATA.menuMix;
+  if (!d || !d.centers || !d.centers.length) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const share = (n, tot) => (tot ? (n / tot * 100).toFixed(1) + "%" : "—");
+  const head = "<thead><tr><th>Revenue center</th><th>Txns</th>" +
+    "<th>Alcohol only</th><th>Food only</th><th>Both</th><th>Neither</th>" +
+    "<th>Alcohol sales</th><th>Food sales</th></tr></thead>";
+  let body = "<tbody>";
+  d.centers.forEach(c => {
+    const r = d.rows[c];
+    if (!r) return;
+    // The sales ratio is food vs alcohol only — "other" (N/A beverage, retail)
+    // is left out of the denominator so the two shares read against each other.
+    const fa = r.foodSales + r.alcoholSales;
+    body += `<tr><td>${esc(c)}</td><td>${num(r.txns)}</td>` +
+      `<td>${share(r.alcoholOnly, r.txns)}<span class="rc-sub">${num(r.alcoholOnly)}</span></td>` +
+      `<td>${share(r.foodOnly, r.txns)}<span class="rc-sub">${num(r.foodOnly)}</span></td>` +
+      `<td>${share(r.both, r.txns)}<span class="rc-sub">${num(r.both)}</span></td>` +
+      `<td>${share(r.neither, r.txns)}<span class="rc-sub">${num(r.neither)}</span></td>` +
+      `<td>${money(r.alcoholSales)}<span class="rc-sub">${share(r.alcoholSales, fa)} of food+alc</span></td>` +
+      `<td>${money(r.foodSales)}<span class="rc-sub">${share(r.foodSales, fa)} of food+alc</span></td>` +
+      "</tr>";
+  });
+  body += "</tbody>";
+  document.getElementById("mixTable").innerHTML = head + body;
+}
+
 // Location only: kitchen ticket time (fired -> ready) by channel.
 function renderTicketTimes() {
   const card = document.getElementById("ticket-card");
@@ -1471,6 +1522,7 @@ function renderAll() {
   renderOrdersHeatmap();
   renderRevenueCenterSummary();
   renderRevenueCenters();
+  renderMenuMix();
   renderTicketTimes();
   renderTicketTrend();
   renderDineTicket();

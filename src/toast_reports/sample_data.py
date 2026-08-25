@@ -32,6 +32,12 @@ _DINE_IN_CENTERS = [
 ]
 
 
+# Sales categories mirror a real Toast menu: food plus a few alcohol categories
+# and a non-alcoholic one (which must NOT be counted as booze). Bar tickets skew
+# alcohol, dining-room tickets skew food, and plenty hold both.
+_ALCOHOL_CATEGORIES = ["Liquor", "Beer", "Wine"]
+
+
 def build_sample_datasets(
     locations: list[Location] | None = None, weeks: int = 4, end: date | None = None
 ) -> list[LocationDataset]:
@@ -88,6 +94,21 @@ def build_sample_datasets(
                 if bumps_tickets:
                     base = {"DINE_IN": 11.0, "TAKE_OUT": 12.0, "DELIVERY": 10.0}[behavior]
                     ticket_mins = round(max(2.0, rng.gauss(base, 3.5)), 2)
+                # Item mix: bar tickets are mostly drinks, dining room mostly
+                # food, and a healthy share of both carry the other too.
+                at_bar = revenue_center == "Bar"
+                p_alcohol = 0.9 if at_bar else 0.35
+                p_food = 0.45 if at_bar else 0.95
+                by_category: dict[str, float] = {}
+                if rng.random() < p_food:
+                    by_category["Food"] = round(net * rng.uniform(0.5, 0.9), 2)
+                if rng.random() < p_alcohol:
+                    by_category[rng.choice(_ALCOHOL_CATEGORIES)] = round(
+                        net * rng.uniform(0.2, 0.5), 2
+                    )
+                if not by_category:  # soda-and-a-smile ticket
+                    by_category["N/A Beverage"] = round(net * 0.6, 2)
+
                 ds.orders.append(
                     OrderRecord(
                         location_guid=loc.guid,
@@ -102,6 +123,7 @@ def build_sample_datasets(
                         source=source,
                         dining_behavior=behavior,
                         revenue_center=revenue_center,
+                        sales_by_category=by_category,
                         ticket_ready_minutes=ticket_mins,
                     )
                 )

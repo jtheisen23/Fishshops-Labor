@@ -143,3 +143,57 @@ def test_revenue_centers_falls_back_to_v1_and_degrades_to_empty():
 
     c._get = always_fails  # type: ignore[assignment]
     assert c.get_revenue_centers(Location("g", "Test")) == {}
+
+
+def test_orders_resolve_sales_categories_from_line_items():
+    """Line items reference a sales category by GUID; the config endpoint names
+    it. Voided items are skipped, modifiers aren't double-counted (their price
+    is already inside the parent item), and an item with no category lands
+    under "" so it can be reported as uncategorized."""
+    c = _client()
+
+    def fake_get(path, guid, params=None):
+        if "salesCategories" in path:
+            return [{"guid": "sc-food", "name": "Food"}, {"guid": "sc-beer", "name": "Beer"}]
+        return []  # dining options, revenue centers
+
+    def fake_paginated(path, guid, params):
+        return [{
+            "guid": "o1", "businessDate": "20260706",
+            "checks": [{"amount": 40, "taxAmount": 3, "payments": [], "selections": [
+                {"price": 22.0, "salesCategory": {"guid": "sc-food"},
+                 "modifiers": [{"price": 2.0, "salesCategory": {"guid": "sc-food"}}]},
+                {"price": 9.0, "salesCategory": {"guid": "sc-beer"}},
+                {"price": 99.0, "salesCategory": {"guid": "sc-beer"}, "voided": True},
+                {"price": 4.0},  # no sales category at all
+            ]}],
+        }]
+
+    c._get = fake_get  # type: ignore[assignment]
+    c._get_paginated = fake_paginated  # type: ignore[assignment]
+    orders = c.get_orders(Location("g", "Test"), datetime(2026, 7, 6), datetime(2026, 7, 6, 23, 59, 59))
+
+    assert len(orders) == 1
+    # 22.0 only — the 2.00 modifier is not added on top of its parent item.
+    assert orders[0].sales_by_category == {"Food": 22.0, "Beer": 9.0, "": 4.0}
+
+
+def test_sales_categories_falls_back_to_v1_and_degrades_to_empty():
+    c = _client()
+    tried: list[str] = []
+
+    def only_v1(path, guid, params=None):
+        tried.append(path)
+        if path.endswith("/config/v2/salesCategories"):
+            raise RuntimeError("404 not provisioned")
+        return [{"guid": "sc-1", "name": "Food"}]
+
+    c._get = only_v1  # type: ignore[assignment]
+    assert c.get_sales_categories(Location("g", "Test")) == {"sc-1": "Food"}
+    assert tried == ["/config/v2/salesCategories", "/config/v1/salesCategories"]
+
+    def always_fails(path, guid, params=None):
+        raise RuntimeError("no scope")
+
+    c._get = always_fails  # type: ignore[assignment]
+    assert c.get_sales_categories(Location("g", "Test")) == {}
