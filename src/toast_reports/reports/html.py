@@ -482,12 +482,23 @@ def _revenue_center_summary(revenue_centers: dict | None, present: list[str]) ->
             "ordersPerDay": round(total_orders / ndays, 1),
         }
 
+    # Locations can trade different days, so report the overall span and flag
+    # whether every location contributed the same number of days.
+    firsts = [revenue_centers[n]["days"][0] for n in locs if revenue_centers[n]["days"]]
+    lasts = [revenue_centers[n]["days"][-1] for n in locs if revenue_centers[n]["days"]]
+    counts = set(day_counts.values())
+    window = {
+        "from": min(firsts), "to": max(lasts),
+        "days": max(counts), "uniform": len(counts) == 1,
+    } if firsts else None
+
     return {
         "centers": centers,
         "locations": locs,
         "days": day_counts,
         "cells": cells,
         "totals": loc_totals,
+        "window": window,
     }
 
 
@@ -669,6 +680,10 @@ _HTML_TEMPLATE = r"""<!doctype html>
   #rcTable thead th:first-child { z-index: 3; }
   /* Second line in a revenue-center cell: transactions under the sales figure. */
   .rc-sub { display: block; font-size: 11px; font-weight: 400; opacity: .78; margin-top: 1px; }
+  /* Explicit reporting window under a board's title, so the span a board covers
+     never has to be inferred. */
+  .window { font-size: 12.5px; font-weight: 650; color: var(--ink-2); margin: -4px 0 8px;
+            font-variant-numeric: tabular-nums; }
   .oh-block { margin-top: 16px; }
   .oh-block:first-child { margin-top: 2px; }
   .oh-name { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; margin: 0 2px 6px; }
@@ -734,6 +749,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section class="card" id="rc-summary-card" style="display:none">
     <h2>Sales &amp; transactions by revenue center</h2>
+    <p class="window" id="rc-summary-window"></p>
     <p class="hint" id="rc-summary-hint">Net sales and transaction count in each revenue center, by location. Open a location above for its day-by-day breakdown.</p>
     <div class="tablewrap"><table id="rcSummaryTable"></table></div>
     <p class="hint" style="margin-top:10px">Each cell: net sales over the window, with transactions and share of that location's sales below.</p>
@@ -741,6 +757,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section class="card" id="rc-card" style="display:none">
     <h2>Sales &amp; transactions per day by revenue center</h2>
+    <p class="window" id="rc-window"></p>
     <p class="hint" id="rc-hint">Net sales and transaction count in each revenue center by business day, most recent first. Darker = more sales.</p>
     <div class="tablewrap"><table id="rcTable" class="heat"></table></div>
     <div class="legend" id="rc-legend" style="margin-top:10px"></div>
@@ -749,7 +766,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
 
   <section class="card" id="mix-card" style="display:none">
     <h2>Food vs. alcohol by revenue center</h2>
-    <p class="hint" id="mix-hint">How each revenue center's tickets split between food and alcohol.</p>
+    <p class="window" id="mix-window"></p>
+    <p class="hint" id="mix-hint">How each revenue center's tickets split between food and alcohol. The newest day may still be in progress.</p>
     <div class="tablewrap"><table id="mixTable"></table></div>
     <p class="hint" style="margin-top:10px">Tickets often hold both, so the transaction columns are a four-way split (they add to 100%), not a food/alcohol ratio. The sales mix on the right is the ratio. Sales are item prices by Toast sales category, before order-level discounts — a mix, not a total.</p>
   </section>
@@ -1039,6 +1057,17 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 // JS Date.getDay(): 0 = Sunday.
 const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 function fmtDay(iso) { const p = iso.split("-"); return MONTHS[+p[1]-1] + " " + (+p[2]); }
+// "Jul 29 – Aug 25, 2026", or with both years when the span crosses New Year.
+function fmtRange(fromIso, toIso) {
+  const fy = fromIso.split("-")[0], ty = toIso.split("-")[0];
+  if (fy !== ty) return `${fmtDay(fromIso)}, ${fy} – ${fmtDay(toIso)}, ${ty}`;
+  return `${fmtDay(fromIso)} – ${fmtDay(toIso)}, ${ty}`;
+}
+function windowLabel(w) {
+  if (!w) return "";
+  const days = `${w.days} trading day${w.days === 1 ? "" : "s"}`;
+  return `${fmtRange(w.from, w.to)} · ${w.uniform === false ? "up to " : ""}${days}`;
+}
 function changeCell(change) {
   if (change == null) return "—";
   const up = change > 0.0005, down = change < -0.0005;
@@ -1119,10 +1148,13 @@ function renderRevenueCenterSummary() {
              `<span class="rc-sub">${num(t.orders)} txns</span></td>`;
     }).join("") + "</tr></tbody>";
   document.getElementById("rcSummaryTable").innerHTML = head + body;
-  const span = Math.max.apply(null, d.locations.map(l => d.days[l]));
+  document.getElementById("rc-summary-window").textContent = windowLabel(d.window);
   document.getElementById("rc-summary-hint").textContent =
-    "Net sales and transaction count in each revenue center, by location (last " + span +
-    " days of trading). Open a location above for its day-by-day breakdown.";
+    "Net sales and transaction count in each revenue center, by location. " +
+    (d.window && d.window.uniform === false
+      ? "Locations trade different days, so each is measured over its own — hover a cell for its day count. "
+      : "") +
+    "Open a location above for its day-by-day breakdown.";
 }
 
 // Location only: net sales + transactions per day x revenue center.
@@ -1165,9 +1197,11 @@ function renderRevenueCenters() {
     `<td><strong>${money(grandSales)}</strong>` +
     `<span class="rc-sub">${num(grandOrders)} txns</span></td></tr></tbody>`;
   document.getElementById("rcTable").innerHTML = head + body;
+  document.getElementById("rc-window").textContent =
+    windowLabel({from: d.days[0], to: d.days[d.days.length - 1], days: d.days.length});
   document.getElementById("rc-hint").textContent =
-    "Net sales and transaction count in each revenue center by business day, most recent first (last " +
-    d.days.length + " days of trading). Darker = more sales.";
+    "Net sales and transaction count in each revenue center by business day, most recent first. " +
+    "Darker = more sales. The newest day may still be in progress.";
   document.getElementById("rc-legend").innerHTML =
     `<span style="font-size:12px;color:var(--muted)">Fewer</span>` +
     [0.1, 0.3, 0.5, 0.7, 0.9].map(t => `<span class="swatch" style="background:${ordersBand(t)[0]}"></span>`).join("") +
@@ -1202,6 +1236,7 @@ function renderMenuMix() {
   });
   body += "</tbody>";
   document.getElementById("mixTable").innerHTML = head + body;
+  document.getElementById("mix-window").textContent = windowLabel(d.window);
 }
 
 // Location only: kitchen ticket time (fired -> ready) by channel.

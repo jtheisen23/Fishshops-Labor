@@ -108,15 +108,17 @@ def food_alcohol_by_revenue_center(
     Only locations whose items carry sales categories appear — without them
     there is nothing to split.
 
-    Returns ``{location: {"centers": [...], "rows": {center: {...}}}}`` or None.
-    Each row carries transaction counts (``alcoholOnly`` / ``foodOnly`` /
-    ``both`` / ``neither``, which sum to ``txns``) and item sales by bucket.
+    Returns ``{location: {"centers": [...], "rows": {center: {...}},
+    "window": {"from", "to", "days"}}}`` or None. Each row carries transaction
+    counts (``alcoholOnly`` / ``foodOnly`` / ``both`` / ``neither``, which sum
+    to ``txns``) and item sales by bucket.
     """
     from .aggregate import UNASSIGNED_CENTER
 
     out: dict = {}
     for ds in datasets:
-        window = set(recent_order_days(ds, days))
+        day_list = recent_order_days(ds, days)
+        window = set(day_list)
         if not window:
             continue
 
@@ -170,5 +172,15 @@ def food_alcohol_by_revenue_center(
             rows,
             key=lambda c: (c == UNASSIGNED_CENTER, -rows[c]["txns"], c),
         )
-        out[ds.location.name] = {"centers": centers, "rows": rows}
+        out[ds.location.name] = {
+            "centers": centers,
+            "rows": rows,
+            # The exact span these numbers cover, so the board can state it
+            # rather than leaving the reader to assume "last month".
+            "window": {
+                "from": day_list[0].isoformat(),
+                "to": day_list[-1].isoformat(),
+                "days": len(day_list),
+            },
+        }
     return out or None

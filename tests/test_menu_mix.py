@@ -8,7 +8,7 @@ for every ticket exactly once.
 from __future__ import annotations
 
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -163,3 +163,23 @@ def test_location_without_sales_categories_is_omitted():
     out = food_alcohol_by_revenue_center([uncategorized, mixed])
     assert "Has Categories" in out
     assert "No Categories" not in out
+
+
+def test_window_reports_the_exact_span_covered():
+    """The board states its own reporting window, so the span never has to be
+    inferred. Trading days, not calendar days — a closed day is skipped."""
+    days = [date(2026, 8, 1), date(2026, 8, 2), date(2026, 8, 5)]  # closed the 3rd/4th
+    ds = _ds("Oceanside", [_order("Bar", {"Liquor": 10.0}, day=d) for d in days])
+
+    w = food_alcohol_by_revenue_center([ds])["Oceanside"]["window"]
+    assert w == {"from": "2026-08-01", "to": "2026-08-05", "days": 3}
+
+
+def test_window_respects_the_days_limit():
+    ds = _ds("Oceanside", [
+        _order("Bar", {"Liquor": 10.0}, day=D1 + timedelta(days=i)) for i in range(40)
+    ])
+    w = food_alcohol_by_revenue_center([ds], days=28)["Oceanside"]["window"]
+    assert w["days"] == 28
+    assert w["to"] == (D1 + timedelta(days=39)).isoformat()
+    assert w["from"] == (D1 + timedelta(days=12)).isoformat()
