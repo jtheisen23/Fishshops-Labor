@@ -48,6 +48,34 @@ def test_classifies_the_obvious_categories():
     assert classify_category("  liquor ") == ALCOHOL
 
 
+def test_draft_categories_are_alcohol():
+    """Regression: a live run had "Draft" and "HH Draft" (draft beer, and its
+    happy-hour twin) falling to Other, which quietly kept beer out of the
+    alcohol mix. Only "Draft Beer" spelled in full was being caught."""
+    assert classify_category("Draft") == ALCOHOL
+    assert classify_category("HH Draft") == ALCOHOL
+    assert classify_category("Draft Beer") == ALCOHOL
+
+
+def test_real_category_names_from_live_toast_data():
+    """Every sales-category name the four shops actually use, pinned so a change
+    to the keyword rules can't silently re-bucket real menu categories."""
+    expected = {
+        "Food": FOOD, "Online Food": FOOD, "D Food": FOOD,
+        "Appetizers": FOOD, "Desserts": FOOD,
+        "Draft": ALCOHOL, "Draft Beer": ALCOHOL, "HH Draft": ALCOHOL,
+        "Bottle Beer": ALCOHOL, "Bottled Beer": ALCOHOL,
+        "Liquor": ALCOHOL, "HH Liquor": ALCOHOL,
+        "Wine": ALCOHOL, "HH Wine": ALCOHOL,
+        "Specialty Cocktails": ALCOHOL, "HH Specialty Cocktails": ALCOHOL,
+        "N/A Beverage": OTHER, "NA Beverage": OTHER, "Market": OTHER,
+        "Seasoning": OTHER, "Retail": OTHER, "Delivery": OTHER,
+        "Donation": OTHER, "Online": OTHER,
+    }
+    for name, bucket in expected.items():
+        assert classify_category(name) == bucket, f"{name} -> {classify_category(name)}"
+
+
 def test_non_alcoholic_categories_are_not_counted_as_alcohol():
     """The trap: these names contain an alcohol keyword but are the opposite."""
     for name in ["Non-Alcoholic", "Non Alcoholic Beverages", "N/A Beverage",

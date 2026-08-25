@@ -28,8 +28,8 @@ OTHER = "Other"
 # Default name -> bucket mapping. Matched case-insensitively on the whole name;
 # anything unlisted falls through to the keyword rules below.
 DEFAULT_CATEGORY_GROUPS: dict[str, list[str]] = {
-    ALCOHOL: ["Liquor", "Beer", "Wine", "Spirits", "Cocktails", "Draft Beer",
-              "Bottled Beer", "Alcohol", "Bar"],
+    ALCOHOL: ["Liquor", "Beer", "Wine", "Spirits", "Cocktails", "Draft", "Draft Beer",
+              "Bottle Beer", "Bottled Beer", "Specialty Cocktails", "Alcohol", "Bar"],
     FOOD: ["Food", "Kitchen", "Entrees", "Appetizers", "Desserts"],
 }
 
@@ -37,9 +37,12 @@ DEFAULT_CATEGORY_GROUPS: dict[str, list[str]] = {
 # be ruled out before the keyword pass or they'd be counted as booze.
 _NON_ALCOHOLIC = ("n/a", "n a bev", "na bev", "non-alc", "nonalc", "non alc",
                   "no alcohol", "zero proof", "mocktail", "soft drink")
+# "draft" earns its place: on a restaurant menu a category called "Draft" (or
+# "HH Draft" for happy hour) is draft beer — the word never means anything else
+# where a separate "Bottle Beer" category exists.
 _ALCOHOL_KEYWORDS = ("liquor", "beer", "wine", "spirit", "cocktail", "alcohol",
-                     "tequila", "whiskey", "whisky", "vodka", "gin", "rum",
-                     "seltzer", "sake", "cider", "mezcal")
+                     "draft", "tequila", "whiskey", "whisky", "vodka", "gin",
+                     "rum", "seltzer", "sake", "cider", "mezcal")
 _FOOD_KEYWORDS = ("food", "kitchen", "entree", "appetizer", "dessert", "side",
                   "salad", "taco", "sandwich", "plate")
 

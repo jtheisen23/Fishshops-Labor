@@ -82,6 +82,19 @@ pin it explicitly in `sales_category_groups` — an exact name match always beat
 the keyword guess. A location whose items carry no sales categories is left off
 this board entirely.
 
+`config.yaml` ships with the four shops' real category names already pinned, so
+the mix doesn't rely on keyword guessing. Two things that mapping can't fix:
+
+- **Encinitas rings online orders under a category literally named `Online`.**
+  That's a *channel* bucket, not a food/drink one, so those tickets' contents
+  can't be split — they count as "neither" and their ~$55k sits in Other. The
+  same is true of `Delivery`. Point Loma, by contrast, uses `Online Food`, which
+  does split correctly. To fix Encinitas you'd have to re-categorize in Toast;
+  no report-side mapping can recover what the category doesn't record.
+- `Draft` and `HH Draft` are draft beer (a separate `Bottle Beer` category
+  exists), so both map to Alcohol. Leaving them unmapped kept beer out of the
+  alcohol mix entirely — worth remembering if new categories appear.
+
 ### Notes on the Toast lookups
 
 Names come from Toast's config API (`/config/v2/revenueCenters`, falling back to
