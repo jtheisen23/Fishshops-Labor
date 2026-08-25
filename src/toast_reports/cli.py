@@ -205,6 +205,26 @@ def _log_sales_categories(datasets: list[LocationDataset], groups: dict) -> None
         log.info("Sales categories for %s: %s", name, ", ".join(parts))
 
 
+def _log_menu_mix(mix: dict | None) -> None:
+    """Log the food-vs-alcohol split per revenue center. The dashboard board
+    shows this too, but having it in the run log means the numbers can be read
+    (and checked) without opening the page."""
+    for name, data in (mix or {}).items():
+        for center in data["centers"]:
+            r = data["rows"][center]
+            fa = r["foodSales"] + r["alcoholSales"]
+            pct = lambda n, d: f"{(n / d * 100):.1f}%" if d else "—"  # noqa: E731
+            log.info(
+                "  %s / %s: %s txns — alcohol-only %s, food-only %s, both %s, neither %s "
+                "| alcohol $%s (%s of food+alc), food $%s (%s)",
+                name, center, f"{r['txns']:,}",
+                pct(r["alcoholOnly"], r["txns"]), pct(r["foodOnly"], r["txns"]),
+                pct(r["both"], r["txns"]), pct(r["neither"], r["txns"]),
+                f"{r['alcoholSales']:,.0f}", pct(r["alcoholSales"], fa),
+                f"{r['foodSales']:,.0f}", pct(r["foodSales"], fa),
+            )
+
+
 def _resolve_window(args: argparse.Namespace, week_start: str) -> tuple[date, date]:
     """Pull window ends at `as_of` (today) so the in-progress week is included;
     the split into completed vs current weeks happens downstream. Start reaches
@@ -302,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
     menu_mix = food_alcohol_by_revenue_center(
         datasets, groups=config.report.sales_category_groups
     )
+    if menu_mix:
+        log.info("Food vs alcohol by revenue center (last 28 trading days):")
+        _log_menu_mix(menu_mix)
 
     # Two-row KPI inputs per location: current week (vs same days prior week) and
     # prior completed week (vs the week before it).

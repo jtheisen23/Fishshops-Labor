@@ -40,4 +40,30 @@ report:
   #   sales_category_groups:
   #     Alcohol: ["Liquor", "Beer", "Wine"]
   #     Food:    ["Food", "Beer Cheese Bites"]   # "Beer ..." would read as booze
-  sales_category_groups: {}
+  #
+  # Pinned from the categories the live run actually found across the four
+  # shops, so the mix never depends on a keyword guess. "HH ..." is happy hour;
+  # "Draft" is draft beer (Bottle Beer is its own category).
+  # Everything not listed falls to Other: N/A Beverage, NA Beverage, Market,
+  # Seasoning, Retail, Delivery, Donation — and "Online" at Encinitas, which is
+  # a channel bucket rather than a food/drink one, so its contents can't be
+  # split (see the note in README).
+  sales_category_groups:
+    Alcohol:
+      - "Draft"
+      - "Draft Beer"
+      - "HH Draft"
+      - "Bottle Beer"
+      - "Bottled Beer"
+      - "Liquor"
+      - "HH Liquor"
+      - "Wine"
+      - "HH Wine"
+      - "Specialty Cocktails"
+      - "HH Specialty Cocktails"
+    Food:
+      - "Food"
+      - "Online Food"
+      - "D Food"
+      - "Appetizers"
+      - "Desserts"
