@@ -1,0 +1,31 @@
+name: Keepalive
+
+# GitHub auto-disables scheduled (cron) workflows after 60 days without any
+# repository activity — and the Weekly Toast Report's own scheduled runs do NOT
+# count as activity. This tiny job pushes an empty commit twice a month so the
+# repo always looks active, which keeps the Weekly Toast Report cron running
+# indefinitely. (An empty commit is real repo activity; it does not trigger
+# other workflows, so it won't kick off a report build or loop on itself.)
+on:
+  schedule:
+    - cron: "0 7 1,15 * *"   # 1st & 15th each month (~2-week max gap, well under 60 days)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push empty keepalive commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive — keep scheduled workflow active [skip ci]"
+          git push
